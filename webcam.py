@@ -43,6 +43,7 @@ class VideoApp:
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Vectorwave": self.transformer_vectorwave,
             "Fibonacci Compression": self.transformer_fibonacci,
             "Retro Compression": self.transformer_retro,
             "Intermediate": self.transformer_intermediate,
@@ -158,6 +159,41 @@ class VideoApp:
 
     def transformer_dummy(self, frame):
         return frame
+    
+    def transformer_vectorwave(self, frame, max_shapes=256):
+        # Convert to grayscale for edge detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Apply Gaussian blur to reduce noise and improve edge detection
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Canny edge detection
+        edges = cv2.Canny(blurred, 50, 150)
+        
+        # Find contours (vectorized shapes)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Sort contours by area (largest first) and limit to max_shapes
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_shapes]
+        
+        # Create a blank canvas matching the original frame size
+        output = np.zeros_like(frame)
+        
+        # Retro neon colors (e.g., cyan, magenta, green)
+        colors = [(0, 255, 255), (255, 0, 255), (255, 255, 0),
+                    (0, 255, 0), (255, 0, 0), (0, 0, 255),
+                    (128, 128, 128), (255, 255, 155)
+                  ]
+        
+        # Draw contours as wireframes
+        for i, contour in enumerate(contours):
+            color = colors[i % len(colors)]  # Cycle through neon colors
+            # Approximate the contour to reduce points (simplify the shape)
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            cv2.drawContours(output, [approx], -1, color, 1)  # Thin lines for wireframe
+        
+        return output
 
     def transformer_fibonacci(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -181,15 +217,64 @@ class VideoApp:
         self.last_frame = frame_rgb.copy()
         return cv2.resize(frame_rgb, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
 
-    def transformer_intermediate(self, frame):
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        return frame
+    # def transformer_intermediate(self, frame):
+    def transformer_intermediate(self, frame, bitrate=61440):
+        # Resolution Slice
+        target_bits = bitrate // 30
+        if bitrate <= 61440:
+            frame = cv2.resize(frame, (320, 240))
+            pixels = 76800
+        else:  # 4K
+            frame = cv2.resize(frame, (640, 360))
+            pixels = 230400
+
+        # Quantize to 16 colors (4-bit LUT)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        quantized = (gray // 16) * 16  # ~4 bits/pixel
+
+        # Delta Frame (every 30th as keyframe)
+        if not hasattr(self, 'frame_count'):
+            self.frame_count = 0
+        self.frame_count += 1
+        if self.last_frame is not None and self.frame_count % 30 != 0:
+            delta = quantized.astype(np.int16) - self.last_frame.astype(np.int16)
+            delta = np.where(np.abs(delta) > 8, delta // 8, 0)  # ~1 bit/pixel
+            quantized = (self.last_frame + delta * 8).clip(0, 255).astype(np.uint8)
+        self.last_frame = quantized.copy()
+
+        # Upscale for display
+        if bitrate <= 61440:
+            frame = cv2.resize(quantized, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
+        else:
+            frame = cv2.resize(quantized, (3840, 2160), interpolation=cv2.INTER_NEAREST)
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        # if len(frame.shape) == 2:
+        #     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        # return frame
 
     def transformer_retro_flashy(self, frame):
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        return frame
+        # Resize
+        frame = cv2.resize(frame, (320, 240))
+
+        # Quantize to 8 colors (3-bit LUT)
+        frame_rgb = (frame // 32) * 32
+
+        # Delta Frame (every 30th as keyframe)
+        if not hasattr(self, 'frame_count'):
+            self.frame_count = 0
+        
+        self.frame_count += 1
+
+        if self.last_frame is not None and self.frame_count % 30 != 0:
+            delta = frame_rgb.astype(np.int16) - self.last_frame.astype(np.int16)
+            delta = np.where(np.abs(delta) > 16, delta // 16, 0)  # ~1 bit/pixel
+            frame_rgb = (self.last_frame + delta * 16).clip(0, 255).astype(np.uint8)
+
+        self.last_frame = frame_rgb.copy()
+
+        # Upscale for display
+        return cv2.resize(frame_rgb, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
 
     def transformer_interlace(self, frame):
         if len(frame.shape) == 2:
@@ -264,10 +349,10 @@ class VideoApp:
             if current_time - self.last_metrics_time >= 0.5:
                 self.last_fps, self.last_data_rate = self.calculate_metrics()
                 self.last_metrics_time = current_time
-            cv2.putText(frame, f"FPS: {self.last_fps:.1f}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.putText(frame, f"Data Rate: {self.last_data_rate:.1f} kbps", (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # cv2.putText(frame, f"FPS: {self.last_fps:.1f}", (10, 30), 
+            #            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            # cv2.putText(frame, f"Data Rate: {self.last_data_rate:.1f} kbps", (10, 60), 
+            #            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
