@@ -49,6 +49,9 @@ class VideoApp:
             "Intermediate": self.transformer_intermediate,
             "Retro Flashy": self.transformer_retro_flashy,
             "Interlaced": self.transformer_interlace,
+            "Cybergrid": self.transformer_cybergrid,
+            "MacroBlast": self.transformer_macroblast,
+            "Tile-Cycle": self.transformer_tilecycle,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -194,6 +197,168 @@ class VideoApp:
             cv2.drawContours(output, [approx], -1, color, 1)  # Thin lines for wireframe
         
         return output
+    
+    def transformer_cybergrid(self, frame, max_shapes=512, grid_spacing=20):
+        # Convert to grayscale and detect edges
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        
+        # Find and limit contours
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_shapes]
+        
+        # Create output canvas
+        height, width = frame.shape[:2]
+        output = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Draw vectorized edges in neon cyan
+        for contour in contours:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            cv2.drawContours(output, [approx], -1, (0, 255, 255), 1)
+        
+        # Add pulsing grid
+        grid_color = (255, 0, 255)  # Neon magenta
+        pulse = int(128 + 127 * np.sin(self.frame_count * 0.1))  # Flicker effect
+        grid_color = (pulse, 0, pulse)
+        
+        for y in range(0, height, grid_spacing):
+            cv2.line(output, (0, y), (width, y), grid_color, 1)
+        for x in range(0, width, grid_spacing):
+            cv2.line(output, (x, 0), (x, height), grid_color, 1)
+        
+        # Optional: Shift grid over time
+        offset = int(self.frame_count * 2) % grid_spacing
+        for y in range(offset, height, grid_spacing):
+            cv2.line(output, (0, y), (width, y), (0, 255, 0), 1)  # Green overlay
+        
+        self.frame_count += 1
+        return output
+    
+    def transformer_macroblast(self, frame, block_size=8, quality=5):
+        # Downscale frame to exaggerate blockiness (e.g., 1/4 original size)
+        small_width = self.display_width // 4
+        small_height = self.display_height // 4
+        small_frame = cv2.resize(frame, (small_width, small_height), interpolation=cv2.INTER_NEAREST)
+        
+        # Encode and decode with JPEG at low quality to introduce macroblocking
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+        _, encoded = cv2.imencode('.jpg', small_frame, encode_param)
+        decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        
+        # Upscale back to original size with nearest-neighbor to keep blocks sharp
+        blocky_frame = cv2.resize(decoded, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
+        
+        # Enhance block edges for extra "JPEG-y" effect (fixed version)
+        gray = cv2.cvtColor(blocky_frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        # Convert edges to BGR and apply cyan mask directly
+        edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        edges_colored = np.zeros_like(blocky_frame, dtype=np.uint8)
+        edges_colored[edges != 0] = [0, 255, 255]  # Cyan where edges exist
+        
+        # Blend with explicit type handling
+        blocky_frame = cv2.addWeighted(blocky_frame, 0.8, edges_colored, 0.2, 0, dtype=cv2.CV_8U)
+        
+        return blocky_frame
+    
+    def transformer_tilecycle(self, frame, tile_size=16, max_depth=3):
+        # Ensure frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        height, width = frame.shape[:2]
+        
+        # Create output canvas
+        output = np.zeros_like(frame, dtype=np.uint8)
+        
+        # Recursive tiling function
+        def tile_region(x, y, w, h, depth):
+            # Stop if depth exceeded or region too small
+            if depth > max_depth or w < tile_size or h < tile_size:
+                return
+            
+            # Ensure region is within bounds
+            if x < 0 or y < 0 or x + w > width or y + h > height:
+                return
+            
+            # Extract the region
+            region = frame[y:y+h, x:x+w]
+            if region.shape[0] == 0 or region.shape[1] == 0:
+                return
+            
+            # Divide into 4 quadrants
+            half_w, half_h = w // 2, h // 2
+            # Ensure quadrants have valid sizes
+            if half_w < tile_size or half_h < tile_size:
+                return
+            
+            quadrants = [
+                (x, y, half_w, half_h),                    # Top-left
+                (x + half_w, y, w - half_w, half_h),      # Top-right
+                (x, y + half_h, half_w, h - half_h),      # Bottom-left
+                (x + half_w, y + half_h, w - half_w, h - half_h)  # Bottom-right
+            ]
+            
+            # Create a tile by averaging the quadrants
+            tile = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
+            for qx, qy, qw, qh in quadrants:
+                if qw < 1 or qh < 1:
+                    continue
+                quad = frame[qy:qy+qh, qx:qx+qw]
+                if quad.shape[0] > 0 and quad.shape[1] > 0:
+                    quad_resized = cv2.resize(quad, (tile_size, tile_size), interpolation=cv2.INTER_AREA)
+                    tile = cv2.addWeighted(tile, 0.5, quad_resized, 0.5, 0)
+            
+            # Use the tile to approximate each quadrant with a bitwise operation
+            operation = self.frame_count % 3  # Cycle through operations
+            for qx, qy, qw, qh in quadrants:
+                if qw < tile_size or qh < tile_size:
+                    continue
+                # Ensure region is within bounds
+                if qx + qw > width or qy + qh > height:
+                    continue
+                # Tile the region
+                tiled_region = np.zeros((qh, qw, 3), dtype=np.uint8)
+                for ty in range(0, qh, tile_size):
+                    for tx in range(0, qw, tile_size):
+                        if ty + tile_size <= qh and tx + tile_size <= qw:
+                            # Apply bitwise operation between tile and region
+                            region_patch = frame[qy+ty:qy+ty+tile_size, qx+tx:qx+tx+tile_size]
+                            if operation == 0:
+                                tiled_patch = cv2.bitwise_xor(region_patch, tile)
+                            elif operation == 1:
+                                tiled_patch = cv2.bitwise_or(region_patch, tile)
+                            else:
+                                tiled_patch = cv2.bitwise_and(region_patch, tile)
+                            tiled_region[ty:ty+tile_size, tx:tx+tile_size] = tiled_patch
+                
+                # Blend the tiled region into the output
+                mask = (tiled_region > 0).astype(np.uint8) * 255
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                # Adjust blending to stay within bounds
+                blend_h, blend_w = tiled_region.shape[:2]
+                if qy + blend_h > height or qx + blend_w > width:
+                    blend_h = min(blend_h, height - qy)
+                    blend_w = min(blend_w, width - qx)
+                    tiled_region = tiled_region[:blend_h, :blend_w]
+                    mask = mask[:blend_h, :blend_w]
+                if blend_h > 0 and blend_w > 0:
+                    try:
+                        output[qy:qy+blend_h, qx:qx+blend_w] = cv2.seamlessClone(
+                            tiled_region, output[qy:qy+blend_h, qx:qx+blend_w], mask,
+                            (blend_w//2, blend_h//2), cv2.NORMAL_CLONE
+                        )
+                    except cv2.error as e:
+                        print(f"SeamlessClone error: {e}")
+            
+                # Recursively tile this quadrant
+                tile_region(qx, qy, qw, qh, depth + 1)
+        
+        # Start tiling from the whole frame
+        tile_region(0, 0, width, height, 1)
+        
+        self.frame_count += 1
+        return output
 
     def transformer_fibonacci(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -255,7 +420,7 @@ class VideoApp:
 
     def transformer_retro_flashy(self, frame):
         # Resize
-        frame = cv2.resize(frame, (320, 240))
+        frame = cv2.resize(frame, (28, 24))
 
         # Quantize to 8 colors (3-bit LUT)
         frame_rgb = (frame // 32) * 32
