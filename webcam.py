@@ -4,7 +4,8 @@ from tkinter import Tk, Label, Button, OptionMenu, StringVar, Frame
 from PIL import Image, ImageTk
 import time
 import threading
-from queue import Queue, Empty
+import queue
+from queue import Queue, Empty  # Ensure Queue and Empty are imported
 
 def get_available_cameras():
     cameras = []
@@ -31,11 +32,11 @@ class VideoApp:
         self.last_metrics_time = 0
         self.last_fps = 0
         self.last_data_rate = 0
-        self.last_display_frame = None  # Store the last frame for display
-        self.last_frame_time = 0  # Track when we last got a frame
+        self.last_display_frame = None
+        self.last_frame_time = 0
 
         # Frame queue for threaded camera reading
-        self.frame_queue = Queue(maxsize=5)  # Increased to buffer more frames
+        self.frame_queue = Queue(maxsize=5)  # Use Queue class
         self.camera_thread = None
         self.camera_running = False
 
@@ -54,7 +55,7 @@ class VideoApp:
         self.frame = Frame(root)
         self.frame.pack()
 
-        # Video Display (match camera's default 640x480)
+        # Video Display
         self.display_width = 640
         self.display_height = 480
         self.label = Label(self.frame)
@@ -116,9 +117,10 @@ class VideoApp:
             if ret:
                 try:
                     self.frame_queue.put(frame, block=False)
-                except Queue.Full:
-                    pass
-            # Removed time.sleep to let the thread run as fast as the camera can provide frames
+                except queue.Full:
+                    time.sleep(0.01)
+                    continue
+            time.sleep(0.01)
 
     def update_camera(self, value):
         for index, name in self.camera_list:
@@ -150,10 +152,12 @@ class VideoApp:
                 self.camera_thread.join()
 
     def update_transformer(self, value):
+        self.last_frame = None
+        self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
     def transformer_dummy(self, frame):
-        return frame  # No resizing since display matches camera resolution
+        return frame
 
     def transformer_fibonacci(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -167,7 +171,6 @@ class VideoApp:
         return cv2.cvtColor(quantized, cv2.COLOR_GRAY2BGR)
 
     def transformer_retro(self, frame, target_bits=2048):
-        # Downsample to half resolution (320x240, keeping 4:3 aspect ratio)
         frame = cv2.resize(frame, (320, 240))
         frame_rgb = (frame // 64) * 64
         self.frame_count += 1
@@ -179,12 +182,19 @@ class VideoApp:
         return cv2.resize(frame_rgb, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
 
     def transformer_intermediate(self, frame):
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         return frame
 
     def transformer_retro_flashy(self, frame):
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         return frame
 
     def transformer_interlace(self, frame):
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
         if self.last_frame is None:
             self.last_frame = frame.copy()
         self.frame_count += 1
@@ -222,7 +232,7 @@ class VideoApp:
 
     def update(self):
         current_time = time.time()
-        if current_time - self.last_update_time < 0.030:  # Slightly less than 33ms to account for jitter
+        if current_time - self.last_update_time < 0.030:
             self.root.after(10, self.update)
             return
 
@@ -231,12 +241,21 @@ class VideoApp:
         if self.running:
             try:
                 frame = self.frame_queue.get_nowait()
-                self.last_frame_time = current_time  # Update last frame time
-                frame = self.current_transformer(frame)
-                self.last_display_frame = frame.copy()  # Store for fallback
-            except Empty:
+                self.last_frame_time = current_time
+                try:
+                    frame = self.current_transformer(frame)
+                    self.last_display_frame = frame.copy()
+                except Exception as e:
+                    print(f"Transformer error: {e}")
+                    if self.last_display_frame is not None:
+                        frame = self.last_display_frame.copy()
+                    else:
+                        frame = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
+                        cv2.putText(frame, "Transformer Error", (self.display_width//4, self.display_height//2), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            except queue.Empty:
                 if self.last_display_frame is not None and (current_time - self.last_frame_time) < 1.0:
-                    frame = self.last_display_frame.copy()  # Use last frame if recent
+                    frame = self.last_display_frame.copy()
                 else:
                     frame = np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8)
                     cv2.putText(frame, "No Camera Feed", (self.display_width//4, self.display_height//2), 
@@ -260,7 +279,7 @@ class VideoApp:
 
     def __del__(self):
         self.camera_running = False
-        if self.camera_thread:
+        if hasattr(self, 'camera_thread') and self.camera_thread:  # Check if attribute exists
             self.camera_thread.join()
         if self.cap:
             self.cap.release()
