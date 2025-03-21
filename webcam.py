@@ -39,6 +39,67 @@ def generate_semi_magic_area(m, n, seed=0):
     
     return grid
 
+def nearest_prime_vectorized(values, primes):
+    """
+    Vectorized version to find the nearest prime for an array of values.
+    
+    Args:
+        values (np.ndarray): Array of values to round.
+        primes (np.ndarray): Sorted array of prime numbers.
+    
+    Returns:
+        np.ndarray: Array of nearest primes.
+    """
+    # Reshape values to 1D for processing
+    values_flat = values.flatten()
+    result = np.zeros_like(values_flat, dtype=np.uint8)
+    
+    # For each value, find the nearest prime
+    for i, value in enumerate(values_flat):
+        diffs = np.abs(primes - value)
+        idx = np.argmin(diffs)
+        result[i] = primes[idx]
+    
+    return result.reshape(values.shape)
+
+def sieve_of_eratosthenes(n):
+    sieve = [True] * (n + 1)
+    sieve[0] = sieve[1] = False
+    for i in range(2, int(n ** 0.5) + 1):
+        if sieve[i]:
+            for j in range(i * i, n + 1, i):
+                sieve[j] = False
+    return np.array([i for i in range(n + 1) if sieve[i]], dtype=np.uint8)
+
+def precompute_nearest_primes(max_value=255):
+    """
+    Precompute a lookup table mapping each value from 0 to max_value to the nearest prime.
+    
+    Args:
+        max_value (int): Maximum value (e.g., 255 for RGB).
+    
+    Returns:
+        np.ndarray: Lookup table mapping each value to the nearest prime.
+    """
+    primes = sieve_of_eratosthenes(max_value)
+    lookup = np.zeros(max_value + 1, dtype=np.uint8)
+    
+    for value in range(max_value + 1):
+        min_diff = float('inf')
+        nearest = primes[0]
+        for prime in primes:
+            diff = abs(value - prime)
+            if diff < min_diff:
+                min_diff = diff
+                nearest = prime
+            elif diff == min_diff:
+                nearest = min(nearest, prime)
+            else:
+                break
+        lookup[value] = nearest
+    
+    return lookup
+
 class VideoApp:
     def __init__(self, root):
         self.root = root
@@ -79,6 +140,10 @@ class VideoApp:
             magic_area = generate_semi_magic_area(15, 20, seed)  # 480/32, 640/32
             self.magic_areas.append(magic_area)
 
+        # Precompute nearest prime lookup table
+        # self.prime_lookup = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251]
+        self.prime_lookup = precompute_nearest_primes(255)
+
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
@@ -95,6 +160,7 @@ class VideoApp:
             "H.265 Low Bitrate": self.transformer_h265_lowbitrate,
             "Halftone 3D": self.transformer_halftone_3d,
             "Magic Area": self.transformer_magic_area,
+            "Prime RGB": self.transformer_prime_rgb,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -216,6 +282,13 @@ class VideoApp:
 
     def transformer_dummy(self, frame):
         return frame
+    
+    def transformer_prime_rgb(self, frame):
+        # start_total = time.time()
+        frame = frame.astype(np.uint8)
+        output = self.prime_lookup[frame]
+        # print(f"Total time: {(time.time() - start_total)*1000:.1f}ms")
+        return output
     
     def transformer_incremental(self, frame):
         # Encode the frame
