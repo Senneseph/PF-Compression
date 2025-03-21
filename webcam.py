@@ -54,6 +54,12 @@ class VideoApp:
         self.h265_process = None
         self.h265_frame_count = 0
 
+        # Magic Area Generator
+        self.magic_areas = []
+        for seed in range(16):  # num_magic_areas
+            magic_area = self.generate_semi_magic_area(15, 20, seed)  # 480/32, 640/32
+            self.magic_areas.append(magic_area)
+
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
@@ -678,6 +684,127 @@ class VideoApp:
             output_frame[1:height:2, :, :] = frame[1:height:2, :, :]
         self.last_frame = output_frame.copy()
         return output_frame
+    
+    def transformer_magic_area(self, frame, cell_size=32, num_magic_areas=16, operations=None):
+        """
+        Apply a magic area effect to a video frame.
+        
+        Args:
+            frame (np.ndarray): Input frame (RGB or BGR, uint8).
+            cell_size (int): Size of each grid cell (e.g., 32 for 32x32 cells).
+            num_magic_areas (int): Number of predefined magic areas to choose from.
+            operations (list): List of operations to apply (e.g., ['invert', 'mirror']).
+        
+        Returns:
+            np.ndarray: Processed frame with magic area effect.
+        """
+        start_total = time.time()
+        
+        # Ensure frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        height, width = frame.shape[:2]
+        
+        # Compute grid dimensions
+        grid_height = height // cell_size  # 480 / 32 = 15
+        grid_width = width // cell_size    # 640 / 32 = 20
+        
+        # Convert to grayscale and compute cell intensities
+        start_grayscale = time.time()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cell_intensities = np.zeros((grid_height, grid_width), dtype=np.float32)
+        for i in range(grid_height):
+            for j in range(grid_width):
+                y, x = i * cell_size, j * cell_size
+                cell = gray[y:y+cell_size, x:x+cell_size]
+                if cell.shape[0] > 0 and cell.shape[1] > 0:
+                    cell_intensities[i, j] = np.mean(cell)
+        print(f"Grayscale and intensities: {(time.time() - start_grayscale)*1000:.1f}ms")
+        
+        # Generate predefined magic areas
+        start_magic = time.time()
+        magic_areas = []
+        for seed in range(num_magic_areas):
+            magic_area = self.generate_semi_magic_area(grid_height, grid_width, seed)
+            magic_areas.append(magic_area)
+        print(f"Magic areas generation: {(time.time() - start_magic)*1000:.1f}ms")
+        
+        # Find the closest magic area
+        start_match = time.time()
+        cell_intensities_flat = cell_intensities.flatten()
+        cell_intensities_sorted = np.sort(cell_intensities_flat)
+        best_match_idx = 0
+        min_diff = float('inf')
+        for idx, magic_area in enumerate(magic_areas):
+            magic_flat = magic_area.flatten()
+            magic_sorted = np.sort(magic_flat)
+            diff = np.sum(np.abs(cell_intensities_sorted - magic_sorted))
+            if diff < min_diff:
+                min_diff = diff
+                best_match_idx = idx
+        selected_magic_area = magic_areas[best_match_idx].copy()
+        print(f"Magic area matching: {(time.time() - start_match)*1000:.1f}ms")
+        
+        # Apply operations
+        start_operations = time.time()
+        if operations is None:
+            operations = []
+        for op in operations:
+            if op == 'invert':
+                selected_magic_area = (grid_height * grid_width + 1) - selected_magic_area
+            elif op == 'multiply':
+                selected_magic_area = (selected_magic_area * selected_magic_area) % (grid_height * grid_width + 1)
+            elif op == 'mirror':
+                selected_magic_area = selected_magic_area[:, ::-1]
+            elif op == 'flip':
+                selected_magic_area = selected_magic_area[::-1, :]
+            elif op == 'rotate180':
+                selected_magic_area = selected_magic_area[::-1, ::-1]
+        print(f"Operations: {(time.time() - start_operations)*1000:.1f}ms")
+        
+        # Normalize magic area values to 0-255 for rendering
+        start_normalize = time.time()
+        magic_min, magic_max = selected_magic_area.min(), selected_magic_area.max()
+        if magic_max > magic_min:
+            selected_magic_area = (selected_magic_area - magic_min) * 255 / (magic_max - magic_min)
+        selected_magic_area = selected_magic_area.astype(np.uint8)
+        print(f"Normalization: {(time.time() - start_normalize)*1000:.1f}ms")
+        
+        # Tile the magic area across the frame
+        start_tiling = time.time()
+        output = np.zeros((height, width), dtype=np.uint8)
+        for i in range(grid_height):
+            for j in range(grid_width):
+                y, x = i * cell_size, j * cell_size
+                intensity = selected_magic_area[i, j]
+                output[y:y+cell_size, x:x+cell_size] = intensity
+        print(f"Tiling: {(time.time() - start_tiling)*1000:.1f}ms")
+        
+        # Convert to BGR for display
+        start_convert = time.time()
+        output = cv2.cvtColor(output, cv2.COLOR_GRAY2BGR)
+        print(f"Color conversion: {(time.time() - start_convert)*1000:.1f}ms")
+        
+        print(f"Total time: {(time.time() - start_total)*1000:.1f}ms")
+        return output
+    
+    def generate_semi_magic_area(m, n, seed=0):
+        """
+        Generate a semi-magic m x n grid with numbers 1 to m*n.
+        """
+        np.random.seed(seed)
+        numbers = np.arange(1, m * n + 1)
+        np.random.shuffle(numbers)
+        grid = numbers.reshape(m, n)
+        
+        # Attempt to balance row and column sums by sorting
+        for i in range(m):
+            row = grid[i, :]
+            grid[i, :] = np.sort(row)
+        for j in range(n):
+            col = grid[:, j]
+            grid[:, j] = np.sort(col)
+        
+        return grid
 
     def calculate_metrics(self):
         current_time = time.time()
