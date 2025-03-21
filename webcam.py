@@ -6,6 +6,8 @@ import time
 import threading
 import queue
 from queue import Queue, Empty  # Ensure Queue and Empty are imported
+import ffmpeg
+import subprocess
 
 def get_available_cameras():
     cameras = []
@@ -35,14 +37,27 @@ class VideoApp:
         self.last_display_frame = None
         self.last_frame_time = 0
 
+        # Constraints:
+        self.block_size = 16  # Customize this based on desired granularity
+        self.encoded_constraints = []
+        self.decoding_buffer = None
+        self.frame_width = 640  # Your frame width
+        self.frame_height = 480  # Your frame height
+        self.decoding_buffer = None  # State buffer for decoding
+
         # Frame queue for threaded camera reading
         self.frame_queue = Queue(maxsize=5)  # Use Queue class
         self.camera_thread = None
         self.camera_running = False
 
+        # H.265 encoding attributes
+        self.h265_process = None
+        self.h265_frame_count = 0
+
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Incremental Encode": self.transformer_incremental,
             "Vectorwave": self.transformer_vectorwave,
             "Fibonacci Compression": self.transformer_fibonacci,
             "Retro Compression": self.transformer_retro,
@@ -52,6 +67,8 @@ class VideoApp:
             "Cybergrid": self.transformer_cybergrid,
             "MacroBlast": self.transformer_macroblast,
             "Tile-Cycle": self.transformer_tilecycle,
+            "H.265 Low Bitrate": self.transformer_h265_lowbitrate,
+            "Halftone 3D": self.transformer_halftone_3d,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -156,12 +173,135 @@ class VideoApp:
                 self.camera_thread.join()
 
     def update_transformer(self, value):
+        # Close FFmpeg process if switching away from H.265 transformer
+        if self.effect_var.get() == "H.265 Low Bitrate" and value != "H.265 Low Bitrate":
+            if self.h265_process:
+                try:
+                    self.h265_process.stdin.close()
+                    self.h265_process.wait()
+                except:
+                    pass
+                self.h265_process = None
+                self.h265_frame_count = 0
+        
         self.last_frame = None
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
     def transformer_dummy(self, frame):
         return frame
+    
+    def transformer_incremental(self, frame):
+        # Encode the frame
+        encoded_data = self.transformer_incremental_encode(frame)
+        
+        # Decode using the encoded data
+        decoded_frame = self.transformer_incremental_decode(encoded_data)
+        
+        return decoded_frame
+    
+    def transformer_incremental_encode(self, frame):
+        h, w, _ = frame.shape
+        blocks_vertical = h // self.block_size
+        blocks_horizontal = w // self.block_size
+
+        # Flatten blocks from the frame
+        blocks = np.array([
+            frame[y * self.block_size:(y + 1) * self.block_size,
+                x * self.block_size:(x + 1) * self.block_size].flatten()
+            for y in range(blocks_vertical)
+            for x in range(blocks_horizontal)
+        ], dtype=np.uint8)
+
+        # Compute XOR constraint across all blocks
+        xor_constraint = np.bitwise_xor.reduce(blocks, axis=0)
+
+        # Return this XOR constraint as encoded data
+        return xor_constraint.tobytes()  # return bytes directly for compactness
+
+    # Decoder function (for incremental reconstruction from constraints):
+    def transformer_incremental_decode(self, encoded_data):
+        h, w = self.frame_height, self.frame_width  # set these in __init__
+        blocks_vertical = h // self.block_size
+        blocks_horizontal = w // self.block_size
+        num_blocks = blocks_vertical * blocks_horizontal
+        block_pixel_count = self.block_size * self.block_size * 3
+
+        # Convert encoded_data from bytes to numpy array
+        xor_constraint = np.frombuffer(encoded_data, dtype=np.uint8)
+
+        # Initialize decoding buffer if necessary
+        if self.decoding_buffer is None:
+            self.decoding_buffer = np.random.randint(
+                0, 256,
+                size=(num_blocks, block_pixel_count),
+                dtype=np.uint8
+            )
+
+        # Incremental reconstruction: XOR constraint to each block
+        self.decoding_buffer ^= xor_constraint
+
+        # Reconstruct the frame from blocks
+        reconstructed_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        idx = 0
+        for y in range(blocks_vertical):
+            for x in range(blocks_horizontal):
+                block_data = self.decoding_buffer[idx].reshape(
+                    self.block_size, self.block_size, 3
+                )
+                y_pos = y * self.block_size
+                x_pos = x * self.block_size
+                reconstructed_frame[
+                    y_pos:y_pos+self.block_size,
+                    x_pos:x_pos+self.block_size
+                ] = block_data
+                idx += 1
+
+        return reconstructed_frame
+    
+    def transformer_h265_lowbitrate(self, frame):
+        # Ensure frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        
+        # Initialize FFmpeg process on first frame
+        if self.h265_process is None:
+            output_video = "output_h265.mp4"
+            try:
+                # FFmpeg command to encode at 56 kbps with H.265
+                self.h265_process = (
+                    ffmpeg
+                    .input('pipe:', format='rawvideo', pix_fmt='bgr24', s='640x480', r=15)
+                    .output(
+                        output_video,
+                        vcodec='libx265',  # H.265 codec
+                        b='56k',           # Target bitrate: 56 kbps
+                        r=15,              # Frame rate: 15 FPS
+                        pix_fmt='yuv420p', # Pixel format
+                        preset='ultrafast',# Fast encoding
+                        tune='zerolatency',# Low latency
+                        f='mp4',           # Output format
+                        movflags='frag_keyframe+empty_moov',  # For streaming
+                        loglevel='error'
+                    )
+                    .overwrite_output()
+                    .run_async(pipe_stdin=True)
+                )
+            except ffmpeg.Error as e:
+                print(f"FFmpeg error: {e.stderr.decode()}")
+                self.h265_process = None
+                return frame
+        
+        # Write the frame to FFmpeg's stdin
+        try:
+            self.h265_process.stdin.write(frame.tobytes())
+            self.h265_frame_count += 1
+        except Exception as e:
+            print(f"Error writing to FFmpeg: {e}")
+            self.h265_process.terminate()
+            self.h265_process = None
+        
+        self.frame_count += 1
+        return frame  # Return the original frame for display
     
     def transformer_vectorwave(self, frame, max_shapes=256):
         # Convert to grayscale for edge detection
@@ -263,7 +403,7 @@ class VideoApp:
         
         return blocky_frame
     
-    def transformer_tilecycle(self, frame, tile_size=16, max_depth=3):
+    def transformer_tilecycle(self, frame, tile_size=32, max_depth=2):
         # Ensure frame is in uint8 format
         frame = frame.astype(np.uint8)
         height, width = frame.shape[:2]
@@ -288,7 +428,6 @@ class VideoApp:
             
             # Divide into 4 quadrants
             half_w, half_h = w // 2, h // 2
-            # Ensure quadrants have valid sizes
             if half_w < tile_size or half_h < tile_size:
                 return
             
@@ -299,58 +438,40 @@ class VideoApp:
                 (x + half_w, y + half_h, w - half_w, h - half_h)  # Bottom-right
             ]
             
-            # Create a tile by averaging the quadrants
-            tile = np.zeros((tile_size, tile_size, 3), dtype=np.uint8)
-            for qx, qy, qw, qh in quadrants:
-                if qw < 1 or qh < 1:
-                    continue
-                quad = frame[qy:qy+qh, qx:qx+qw]
-                if quad.shape[0] > 0 and quad.shape[1] > 0:
-                    quad_resized = cv2.resize(quad, (tile_size, tile_size), interpolation=cv2.INTER_AREA)
-                    tile = cv2.addWeighted(tile, 0.5, quad_resized, 0.5, 0)
+            # Create a tile by sampling a central patch (faster than resizing quadrants)
+            center_x, center_y = x + w // 4, y + h // 4
+            tile_w, tile_h = min(tile_size, w // 2), min(tile_size, h // 2)
+            tile = frame[center_y:center_y+tile_h, center_x:center_x+tile_w]
+            if tile.shape[0] < tile_size or tile.shape[1] < tile_size:
+                tile = cv2.resize(tile, (tile_size, tile_size), interpolation=cv2.INTER_NEAREST)
             
             # Use the tile to approximate each quadrant with a bitwise operation
             operation = self.frame_count % 3  # Cycle through operations
             for qx, qy, qw, qh in quadrants:
                 if qw < tile_size or qh < tile_size:
                     continue
-                # Ensure region is within bounds
                 if qx + qw > width or qy + qh > height:
                     continue
-                # Tile the region
-                tiled_region = np.zeros((qh, qw, 3), dtype=np.uint8)
-                for ty in range(0, qh, tile_size):
-                    for tx in range(0, qw, tile_size):
-                        if ty + tile_size <= qh and tx + tile_size <= qw:
-                            # Apply bitwise operation between tile and region
-                            region_patch = frame[qy+ty:qy+ty+tile_size, qx+tx:qx+tx+tile_size]
-                            if operation == 0:
-                                tiled_patch = cv2.bitwise_xor(region_patch, tile)
-                            elif operation == 1:
-                                tiled_patch = cv2.bitwise_or(region_patch, tile)
-                            else:
-                                tiled_patch = cv2.bitwise_and(region_patch, tile)
-                            tiled_region[ty:ty+tile_size, tx:tx+tile_size] = tiled_patch
                 
-                # Blend the tiled region into the output
-                mask = (tiled_region > 0).astype(np.uint8) * 255
-                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-                # Adjust blending to stay within bounds
-                blend_h, blend_w = tiled_region.shape[:2]
-                if qy + blend_h > height or qx + blend_w > width:
-                    blend_h = min(blend_h, height - qy)
-                    blend_w = min(blend_w, width - qx)
-                    tiled_region = tiled_region[:blend_h, :blend_w]
-                    mask = mask[:blend_h, :blend_w]
-                if blend_h > 0 and blend_w > 0:
-                    try:
-                        output[qy:qy+blend_h, qx:qx+blend_w] = cv2.seamlessClone(
-                            tiled_region, output[qy:qy+blend_h, qx:qx+blend_w], mask,
-                            (blend_w//2, blend_h//2), cv2.NORMAL_CLONE
-                        )
-                    except cv2.error as e:
-                        print(f"SeamlessClone error: {e}")
-            
+                # Precompute the tiled region
+                tiled_region = np.tile(tile, (qh // tile_size + 1, qw // tile_size + 1, 1))
+                tiled_region = tiled_region[:qh, :qw]  # Crop to fit
+                
+                # Apply bitwise operation directly to the region
+                region_patch = frame[qy:qy+qh, qx:qx+qw]
+                if operation == 0:
+                    tiled_region = cv2.bitwise_xor(region_patch, tiled_region)
+                elif operation == 1:
+                    tiled_region = cv2.bitwise_or(region_patch, tiled_region)
+                else:
+                    tiled_region = cv2.bitwise_and(region_patch, tiled_region)
+                
+                # Simple alpha blending instead of seamlessClone
+                alpha = 0.5  # Adjust for desired blending strength
+                output[qy:qy+qh, qx:qx+qw] = cv2.addWeighted(
+                    output[qy:qy+qh, qx:qx+qw], 1 - alpha, tiled_region, alpha, 0
+                )
+                
                 # Recursively tile this quadrant
                 tile_region(qx, qy, qw, qh, depth + 1)
         
@@ -358,6 +479,106 @@ class VideoApp:
         tile_region(0, 0, width, height, 1)
         
         self.frame_count += 1
+        return output
+
+    def transformer_halftone_3d(self, frame, cell_size=32, palette=None):
+        start_total = time.time()
+        
+        # Ensure frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        height, width = frame.shape[:2]
+        
+        # Upload frame to GPU
+        start_upload = time.time()
+        frame_gpu = cv2.cuda_GpuMat()
+        frame_gpu.upload(frame)
+        print(f"GPU upload: {(time.time() - start_upload)*1000:.1f}ms")
+        
+        # Create a grid of dot centers (CPU)
+        start_grid = time.time()
+        grid_y, grid_x = np.mgrid[0:height:cell_size, 0:width:cell_size]
+        centers = np.vstack([grid_x.ravel(), grid_y.ravel()]).T
+        print(f"Grid setup: {(time.time() - start_grid)*1000:.1f}ms")
+        
+        # Precompute a shaded dot template (CPU)
+        start_template = time.time()
+        dot_size = cell_size
+        dot_template = np.zeros((dot_size, dot_size), dtype=np.uint8)
+        center = dot_size // 2
+        max_radius = dot_size // 2
+        for y in range(dot_size):
+            for x in range(dot_size):
+                dist = np.sqrt((x - center) ** 2 + (y - center) ** 2)
+                if dist <= max_radius:
+                    intensity = int(255 * (1 - dist / max_radius))
+                    dot_template[y, x] = intensity
+        dot_template_gpu = cv2.cuda_GpuMat()
+        dot_template_gpu.upload(dot_template)
+        print(f"Template creation: {(time.time() - start_template)*1000:.1f}ms")
+        
+        # Compute brightness for all cells on GPU
+        start_brightness = time.time()
+        gray_gpu = cv2.cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2GRAY)
+        num_cells_y, num_cells_x = grid_y.shape
+        brightness = np.zeros((num_cells_y, num_cells_x), dtype=np.float32)
+        gray = gray_gpu.download()
+        for i in range(num_cells_y):
+            for j in range(num_cells_x):
+                y, x = grid_y[i, j], grid_x[i, j]
+                cell = gray[y:y+cell_size, x:x+cell_size]
+                if cell.shape[0] > 0 and cell.shape[1] > 0:
+                    brightness[i, j] = np.mean(cell) / 255.0
+        radii = (brightness * (cell_size / 2)).astype(np.int32)
+        print(f"Brightness calculation: {(time.time() - start_brightness)*1000:.1f}ms")
+        
+        # Initialize output canvas on GPU
+        output_gpu = cv2.cuda_GpuMat(height, width, cv2.CV_8UC1, 0)
+        
+        # Draw dots on GPU
+        start_dots = time.time()
+        for radius in range(1, max_radius + 1):
+            mask = radii == radius
+            if not np.any(mask):
+                continue
+            centers_for_radius = centers[mask.ravel()]
+            scaled_radius = min(radius, max_radius)
+            scaled_template_gpu = cv2.cuda.resize(dot_template_gpu, (2 * scaled_radius, 2 * scaled_radius))
+            scaled_template = scaled_template_gpu.download()
+            for x, y in centers_for_radius:
+                top_left_x = x + (cell_size - 2 * scaled_radius) // 2
+                top_left_y = y + (cell_size - 2 * scaled_radius) // 2
+                bottom_right_x = top_left_x + 2 * scaled_radius
+                bottom_right_y = top_left_y + 2 * scaled_radius
+                if top_left_x < 0 or top_left_y < 0 or bottom_right_x > width or bottom_right_y > height:
+                    continue
+                region_gpu = output_gpu.rowRange(top_left_y, bottom_right_y).colRange(top_left_x, bottom_right_x)
+                if region_gpu.size() == scaled_template_gpu.size():
+                    scaled_template_gpu.copyTo(region_gpu, cv2.cuda.max(region_gpu, scaled_template_gpu))
+        print(f"Dot drawing: {(time.time() - start_dots)*1000:.1f}ms")
+        
+        # Convert to BGR on GPU
+        start_convert = time.time()
+        output_bgr_gpu = cv2.cuda.cvtColor(output_gpu, cv2.COLOR_GRAY2BGR)
+        print(f"Color conversion: {(time.time() - start_convert)*1000:.1f}ms")
+        
+        # Download output
+        start_download = time.time()
+        output = output_bgr_gpu.download()
+        print(f"GPU download: {(time.time() - start_download)*1000:.1f}ms")
+        
+        # Apply color palette on CPU (GPU palette mapping is complex)
+        start_palette = time.time()
+        if palette is not None:
+            palette = np.array(palette, dtype=np.uint8)
+            mask = output.sum(axis=2) > 0
+            output_reshaped = output[mask].reshape(-1, 3)
+            if len(output_reshaped) > 0:
+                distances = np.linalg.norm(output_reshaped[:, np.newaxis, :] - palette[np.newaxis, :, :], axis=2)
+                nearest = np.argmin(distances, axis=1)
+                output[mask] = palette[nearest]
+        print(f"Palette mapping: {(time.time() - start_palette)*1000:.1f}ms")
+        
+        print(f"Total time: {(time.time() - start_total)*1000:.1f}ms")
         return output
 
     def transformer_fibonacci(self, frame):
@@ -475,6 +696,8 @@ class VideoApp:
             data_rate = 122.88  # 4,096 bits/frame × 30 FPS
         elif effect in ["Interlaced", "Fibonacci Compression", "Intermediate", "Retro Flashy"]:
             data_rate = 640 * 480 * 24 * 30 / 1000  # Raw 640x480 at 30 FPS
+        elif effect == "H.265 Low Bitrate":
+            data_rate = 56  # 56 kbps as specified
         else:
             data_rate = 0
 
@@ -528,6 +751,13 @@ class VideoApp:
         self.root.after(33, self.update)
 
     def __del__(self):
+        # Existing cleanup code...
+        if self.h265_process:
+            try:
+                self.h265_process.stdin.close()
+                self.h265_process.wait()
+            except:
+                pass
         self.camera_running = False
         if hasattr(self, 'camera_thread') and self.camera_thread:  # Check if attribute exists
             self.camera_thread.join()
@@ -537,6 +767,13 @@ class VideoApp:
 def main():
     root = Tk()
     app = VideoApp(root)
+    fourcc = cv2.VideoWriter_fourcc(*'hevc')  # or 'h265'
+    out = cv2.VideoWriter('test_h265.mp4', fourcc, 30, (640, 480))
+    if not out.isOpened():
+        print("OpenCV does not support H.265 encoding.")
+    else:
+        print("OpenCV supports H.265 encoding!")
+        out.release()
     root.mainloop()
 
 if __name__ == "__main__":
