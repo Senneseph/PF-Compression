@@ -20,6 +20,25 @@ def get_available_cameras():
             break
     return cameras
 
+def generate_semi_magic_area(m, n, seed=0):
+    """
+    Generate a semi-magic m x n grid with numbers 1 to m*n.
+    """
+    np.random.seed(seed)
+    numbers = np.arange(1, m * n + 1)
+    np.random.shuffle(numbers)
+    grid = numbers.reshape(m, n)
+    
+    # Attempt to balance row and column sums by sorting
+    for i in range(m):
+        row = grid[i, :]
+        grid[i, :] = np.sort(row)
+    for j in range(n):
+        col = grid[:, j]
+        grid[:, j] = np.sort(col)
+    
+    return grid
+
 class VideoApp:
     def __init__(self, root):
         self.root = root
@@ -57,7 +76,7 @@ class VideoApp:
         # Magic Area Generator
         self.magic_areas = []
         for seed in range(16):  # num_magic_areas
-            magic_area = self.generate_semi_magic_area(15, 20, seed)  # 480/32, 640/32
+            magic_area = generate_semi_magic_area(15, 20, seed)  # 480/32, 640/32
             self.magic_areas.append(magic_area)
 
         # Transformer map
@@ -75,6 +94,7 @@ class VideoApp:
             "Tile-Cycle": self.transformer_tilecycle,
             "H.265 Low Bitrate": self.transformer_h265_lowbitrate,
             "Halftone 3D": self.transformer_halftone_3d,
+            "Magic Area": self.transformer_magic_area,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -724,7 +744,7 @@ class VideoApp:
         start_magic = time.time()
         magic_areas = []
         for seed in range(num_magic_areas):
-            magic_area = self.generate_semi_magic_area(grid_height, grid_width, seed)
+            magic_area = generate_semi_magic_area(grid_height, grid_width, seed)
             magic_areas.append(magic_area)
         print(f"Magic areas generation: {(time.time() - start_magic)*1000:.1f}ms")
         
@@ -786,25 +806,6 @@ class VideoApp:
         
         print(f"Total time: {(time.time() - start_total)*1000:.1f}ms")
         return output
-    
-    def generate_semi_magic_area(m, n, seed=0):
-        """
-        Generate a semi-magic m x n grid with numbers 1 to m*n.
-        """
-        np.random.seed(seed)
-        numbers = np.arange(1, m * n + 1)
-        np.random.shuffle(numbers)
-        grid = numbers.reshape(m, n)
-        
-        # Attempt to balance row and column sums by sorting
-        for i in range(m):
-            row = grid[i, :]
-            grid[i, :] = np.sort(row)
-        for j in range(n):
-            col = grid[:, j]
-            grid[:, j] = np.sort(col)
-        
-        return grid
 
     def calculate_metrics(self):
         current_time = time.time()
