@@ -441,11 +441,10 @@ class VideoApp:
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
     def compute_complexity_and_subdivide(self, frame, x, y, w, h, min_size=40):
-        """Compute complexity using gradient magnitude and subdivide with color assignment."""
+        """Compute complexity using gradient and entropy, subdivide with tricolor assignment."""
         roi = frame[y:y+h, x:x+w]
         if w < min_size or h < min_size:
-            # Assign a color, ensuring it’s not overused and doesn’t match neighbors
-            return [(x, y, w, h, self._assign_color(frame, x, y, w, h))]
+            return [(x, y, w, h, self._assign_tricolor(x, y, w, h))]
 
         # Count current lines to enforce limits
         if hasattr(self, 'mondrian_h_lines') and hasattr(self, 'mondrian_v_lines'):
@@ -455,22 +454,31 @@ class VideoApp:
             h_count = v_count = 0
             self.mondrian_h_lines = set()
             self.mondrian_v_lines = set()
-            self.color_counts = {tuple(color): 0 for color in MONDRIAN_PALETTE}  # Track usage
+            self.color_counts = {
+                (227, 66, 52): 0,   # Mondrian Red
+                (238, 210, 20): 0,  # Mondrian Yellow
+                (39, 89, 180): 0    # Mondrian Blue
+            }
 
         # Midpoint for potential 4-way split
         mid_x = x + w // 2
         mid_y = y + h // 2
 
-        # Compute gradient magnitude around the midpoint to assess complexity
+        # Compute complexity: gradient magnitude and entropy
         roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         grad_x = cv2.Sobel(roi_gray, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(roi_gray, cv2.CV_32F, 0, 1, ksize=3)
         grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-        center_region = grad_mag[max(0, h//4):min(h, 3*h//4), max(0, w//4):min(w, 3*w//4)]
-        complexity = np.mean(center_region) if center_region.size > 0 else 0
+        grad_mean = np.mean(grad_mag) if grad_mag.size > 0 else 0
+
+        hist = cv2.calcHist([roi_gray], [0], None, [256], [0, 256])
+        hist = hist / hist.sum()
+        entropy = -np.sum(hist * np.log2(hist + 1e-10))
+
+        complexity = grad_mean * entropy
 
         # Split if complexity is high and within line limits
-        if complexity > 50 and h_count < 15 and v_count < 20:  # Threshold tuned for contrast
+        if complexity > 100 and h_count < 15 and v_count < 20:  # Adjusted threshold
             self.mondrian_h_lines.add(mid_y)
             self.mondrian_v_lines.add(mid_x)
             
@@ -484,14 +492,14 @@ class VideoApp:
             
             # Assign colors to sub-regions
             result = []
-            used_colors = set()  # Colors used in this split
+            used_colors = set()
             for rx, ry, rw, rh in sub_regions:
-                color = self._assign_color(frame, rx, ry, rw, rh, exclude_colors=used_colors)
+                color = self._assign_tricolor(rx, ry, rw, rh, exclude_colors=used_colors)
                 used_colors.add(tuple(color))
                 result.append((rx, ry, rw, rh, color))
             return result
         else:
-            color = self._assign_color(frame, x, y, w, h)
+            color = self._assign_tricolor(x, y, w, h)
             return [(x, y, w, h, color)]
 
     def _assign_color(self, frame, x, y, w, h, exclude_colors=None):
@@ -542,6 +550,54 @@ class VideoApp:
             # Fallback: use the least used color overall, ignoring constraints
             color_counts = [(count, color) for color, count in self.color_counts.items() 
                         if tuple(color) != (0, 0, 0)]
+            color = min(color_counts, key=lambda x: x[0])[1]
+
+        self.color_counts[tuple(color)] = self.color_counts.get(tuple(color), 0) + 1
+        return color
+    
+    def _assign_tricolor(self, x, y, w, h, exclude_colors=None):
+        """Assign one of three Mondrian colors, ensuring no adjacent duplicates."""
+        if exclude_colors is None:
+            exclude_colors = set()
+
+        # Tricolor palette
+        tricolor = [
+            (227, 66, 52),   # Mondrian Red
+            (238, 210, 20),  # Mondrian Yellow
+            (39, 89, 180)    # Mondrian Blue
+        ]
+
+        # Check neighbor colors
+        neighbors = set()
+        for prev_x, prev_y, prev_w, prev_h, prev_color in self.mondrian_map or []:
+            if (x + w == prev_x and y < prev_y + prev_h and y + h > prev_y) or \
+            (prev_x + prev_w == x and y < prev_y + prev_h and y + h > prev_y) or \
+            (y + h == prev_y and x < prev_x + prev_w and x + w > prev_x) or \
+            (prev_y + prev_h == y and x < prev_x + prev_w and x + w > prev_x):
+                neighbors.add(tuple(prev_color))
+
+        forbidden_colors = exclude_colors | neighbors
+
+        # Prefer underused colors
+        min_regions_per_color = 5
+        underused = [color for color, count in self.color_counts.items() if count < min_regions_per_color]
+        available_colors = [color for color in tricolor if tuple(color) not in forbidden_colors]
+
+        if underused:
+            candidates = [color for color in underused if tuple(color) in {tuple(c) for c in available_colors}]
+            if not candidates:
+                candidates = available_colors
+        else:
+            candidates = available_colors
+
+        if not candidates:
+            candidates = [color for color in tricolor if tuple(color) not in exclude_colors]
+
+        if not candidates:
+            color_counts = [(count, color) for color, count in self.color_counts.items()]
+            color = min(color_counts, key=lambda x: x[0])[1]
+        else:
+            color_counts = [(self.color_counts.get(tuple(c), 0), c) for c in candidates]
             color = min(color_counts, key=lambda x: x[0])[1]
 
         self.color_counts[tuple(color)] = self.color_counts.get(tuple(color), 0) + 1
@@ -741,42 +797,71 @@ class VideoApp:
         return output_frame
     
     def transformer_complexity_test(self, frame):
-        """Transform the frame into a grayscale heatmap of complexity information."""
+        """Visualize subdivisions with tricolor assignment."""
         h, w, _ = frame.shape
-        complexity_map = np.zeros((h, w), dtype=np.float32)
+        output_frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Compute complexity for each potential split region
-        grid_size = 8  # Matches 640x480 divisible by 8
-        for i in range(0, h, h // grid_size):
-            for j in range(0, w, w // grid_size):
-                roi = frame[i:i + h//grid_size, j:j + w//grid_size]
-                if roi.shape[0] == 0 or roi.shape[1] == 0:
-                    continue
+        # Update the map every 30 frames
+        if not hasattr(self, 'frame_count'):
+            self.frame_count = 0
+        if not hasattr(self, 'mondrian_map') or self.mondrian_map is None or self.frame_count % 30 == 0:
+            self.mondrian_h_lines = set()
+            self.mondrian_v_lines = set()
+            self.color_counts = {
+                (227, 66, 52): 0,   # Mondrian Red
+                (238, 210, 20): 0,  # Mondrian Yellow
+                (39, 89, 180): 0    # Mondrian Blue
+            }
+            
+            # Subdivide and assign colors
+            regions = []
+            grid_size = 8
+            for i in range(0, h, h // grid_size):
+                for j in range(0, w, w // grid_size):
+                    self.mondrian_map = regions
+                    sub_regions = self.compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
+                    regions.extend(sub_regions)
+            
+            # Enforce minimum 5 regions per color
+            min_regions_per_color = 5
+            total_regions_needed = 3 * min_regions_per_color  # 3 colors
+            color_usage = self.color_counts.copy()
+            if len(regions) < total_regions_needed:
+                extra_needed = total_regions_needed - len(regions)
+                available_regions = [(x, y, w, h, c) for x, y, w, h, c in regions if w > 40 and h > 40]
+                for _ in range(min(extra_needed, len(available_regions))):
+                    rx, ry, rw, rh, _ = available_regions.pop(0)
+                    mid_x, mid_y = rx + rw // 2, ry + rh // 2
+                    if len(self.mondrian_h_lines) < 15 and len(self.mondrian_v_lines) < 20:
+                        self.mondrian_h_lines.add(mid_y)
+                        self.mondrian_v_lines.add(mid_x)
+                        sub_regions = [
+                            (rx, ry, rw // 2, rh // 2),
+                            (mid_x, ry, rw - rw // 2, rh // 2),
+                            (rx, mid_y, rw // 2, rh - rh // 2),
+                            (mid_x, mid_y, rw - rw // 2, rh - rh // 2)
+                        ]
+                        used_colors = set()
+                        for srx, sry, srw, srh in sub_regions:
+                            color = self._assign_tricolor(srx, sry, srw, srh, exclude_colors=used_colors)
+                            used_colors.add(tuple(color))
+                            regions.append((srx, sry, srw, srh, color))
+                            color_usage[tuple(color)] += 1
+            
+            self.mondrian_map = regions
 
-                # Compute gradient magnitude
-                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                grad_x = cv2.Sobel(roi_gray, cv2.CV_32F, 1, 0, ksize=3)
-                grad_y = cv2.Sobel(roi_gray, cv2.CV_32F, 0, 1, ksize=3)
-                grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-                grad_mean = np.mean(grad_mag) if grad_mag.size > 0 else 0
+        # Render the regions with their main colors
+        for x, y, w, h, color in self.mondrian_map:
+            if w < 20 or h < 20:
+                continue
+            output_frame[y:y+h, x:x+w] = color
+            
+            # Draw black lines
+            thickness = max(2, min(6, int((w + h) / 50)))
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
 
-                # Compute local entropy (texture/detail)
-                hist = cv2.calcHist([roi_gray], [0], None, [256], [0, 256])
-                hist = hist / hist.sum()  # Normalize to probability
-                entropy = -np.sum(hist * np.log2(hist + 1e-10))  # Shannon entropy
-
-                # Combine metrics: high gradient AND high entropy indicate complexity
-                complexity = grad_mean * entropy
-                complexity_map[i:i + h//grid_size, j:j + w//grid_size] = complexity
-
-        # Normalize for visualization (0-255)
-        if complexity_map.max() > 0:
-            complexity_map = (complexity_map / complexity_map.max() * 255).astype(np.uint8)
-        else:
-            complexity_map = complexity_map.astype(np.uint8)
-
-        # Convert to BGR for display
-        return cv2.cvtColor(complexity_map, cv2.COLOR_GRAY2BGR)
+        self.frame_count += 1
+        return output_frame
     
     def transformer_mondrian(self, frame):
         h, w, _ = frame.shape
