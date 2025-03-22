@@ -7,7 +7,105 @@ import threading
 import queue
 from queue import Queue, Empty  # Ensure Queue and Empty are imported
 import ffmpeg
+import random
 import subprocess
+
+# Mondrian palette definition
+MONDRIAN_PALETTE_BASE = np.array([
+    [227, 66, 52],    # Mondrian Red
+    [238, 210, 20],   # Mondrian Yellow
+    [39, 89, 180],    # Mondrian Blue
+    [255, 255, 255],  # White
+    [0, 0, 0],        # Black
+    [192, 192, 192],  # Light Gray
+    [128, 128, 128],  # Medium Gray
+    [74, 74, 74],     # Dark Gray
+    [181, 181, 181],  # Light Gray
+])
+
+MONDRIAN_PALETTE = np.array([
+    [245, 66, 52],    # Mondrian Red 1
+    [234, 66, 52],    # Mondrian Red 2
+    [227, 66, 52],    # Mondrian Red 3 (orig)
+    [207, 66, 52],    # Mondrian Red 4
+    [193, 66, 52],    # Mondrian Red 5
+    [254, 226, 20],   # Mondrian Yellow 1
+    [245, 217, 20],   # Mondrian Yellow 2
+    [238, 210, 20],   # Mondrian Yellow 3 (orig)
+    [231, 203, 20],   # Mondrian Yellow 2
+    [222, 197, 20],   # Mondrian Yellow 2
+    [39, 89, 196],    # Mondrian Blue
+    [39, 89, 187],    # Mondrian Blue
+    [39, 89, 180],    # Mondrian Blue (orig)
+    [39, 89, 173],    # Mondrian Blue
+    [39, 89, 164],    # Mondrian Blue
+    [250, 250, 250],  # White 1
+    [241, 241, 241],  # White 2
+    [234, 234, 234],  # White 3 (orig = 255, 255, 255)
+    [227, 227, 227],  # White 4
+    [218, 218, 218],  # White 5
+    [5, 5, 5],        # Mondrian Black 1
+    [14, 14, 14],     # Mondrian Black 2
+    [21, 21, 21],     # Mondrian Black 3 (orig = 33, 33, 33)
+    [28, 28, 28],     # Mondrian Black 4
+    [37, 37, 37],     # Mondrian Black 5
+    [58, 65, 65],  # Dark Gray 1
+    [67, 70, 70],  # Dark Gray 2
+    [74, 74, 74],  # Dark Gray 3 (orig)
+    [81, 78, 78],  # Dark Gray 4
+    [90, 83, 83],  # Dark Gray 5
+    [195, 190, 190],  # Light Gray 1
+    [188, 185, 185],  # Light Gray 2
+    [181, 181, 181],  # Light Gray 3 (orig)
+    [174, 177, 177],  # Light Gray 4
+    [165, 172, 172],  # Light Gray 5
+    [144, 144, 144],  # Medium Gray 1
+    [135, 135, 135],  # Medium Gray 2
+    [128, 128, 128],  # Medium Gray 3 (orig)
+    [121, 121, 121],  # Medium Gray 4
+    [112, 112, 112],  # Medium Gray 5
+])
+
+# Finds closest Mondrian color for each pixel
+def mondrian_color(pixel):
+    distances = np.sqrt(np.sum((MONDRIAN_PALETTE - pixel) ** 2, axis=1))
+    return MONDRIAN_PALETTE[np.argmin(distances)]
+
+class MatrixColumn:
+    def __init__(self, x, height, speed):
+        self.x = x  # X-coordinate of the column
+        self.height = height  # Frame height
+        self.speed = speed  # Speed of falling (pixels per frame)
+        self.head_pos = random.randint(0, height)  # Starting position of the head
+        self.characters = []  # List of (y_position, character) tuples
+        # Katakana characters (subset for simplicity) + numbers
+        self.char_set = [chr(c) for c in range(0x30A2, 0x30FF, 2)] + [str(i) for i in range(10)]
+    
+    def update(self):
+        # Move the head downward
+        self.head_pos += self.speed
+        if self.head_pos > self.height:
+            self.head_pos = 0  # Reset to top when it reaches the bottom
+        
+        # Add a new character at the head position
+        new_char = random.choice(self.char_set)
+        self.characters.append((self.head_pos, new_char))
+        
+        # Remove characters that are too far from the head (more than 20 positions behind)
+        self.characters = [(y, char) for y, char in self.characters if self.head_pos - y <= 400]
+    
+    def draw(self, frame, bright_green, dark_green, font_scale):
+        for i, (y, char) in enumerate(self.characters):
+            # Calculate distance from head to determine brightness
+            distance = self.head_pos - y
+            if distance < 0:
+                continue  # Skip characters below the head after wrapping
+            # Interpolate color from bright green to dark green
+            fade_factor = min(distance / 200, 1.0)  # Fade over 200 pixels
+            color = tuple(int(bright * (1 - fade_factor) + dark * fade_factor) for bright, dark in zip(bright_green, dark_green))
+            # Draw the character
+            y_pos = int(y) % self.height
+            cv2.putText(frame, char, (self.x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
 
 def get_available_cameras():
     cameras = []
@@ -100,6 +198,53 @@ def precompute_nearest_primes(max_value=255):
     
     return lookup
 
+def fibonacci_numbers(max_value=255):
+    """
+    Generate Fibonacci numbers up to max_value.
+    
+    Args:
+        max_value (int): Upper bound (inclusive).
+    
+    Returns:
+        np.ndarray: Array of Fibonacci numbers.
+    """
+    fib = [0, 1]
+    while True:
+        next_fib = fib[-1] + fib[-2]
+        if next_fib > max_value:
+            break
+        fib.append(next_fib)
+    return np.array(fib, dtype=np.uint8)
+
+def precompute_nearest_fibonacci(max_value=255):
+    """
+    Precompute a lookup table mapping each value from 0 to max_value to the nearest Fibonacci number.
+    
+    Args:
+        max_value (int): Maximum value (e.g., 255 for RGB).
+    
+    Returns:
+        np.ndarray: Lookup table mapping each value to the nearest Fibonacci number.
+    """
+    fib_numbers = fibonacci_numbers(max_value)
+    lookup = np.zeros(max_value + 1, dtype=np.uint8)
+    
+    for value in range(max_value + 1):
+        min_diff = float('inf')
+        nearest = fib_numbers[0]
+        for fib in fib_numbers:
+            diff = abs(value - fib)
+            if diff < min_diff:
+                min_diff = diff
+                nearest = fib
+            elif diff == min_diff:
+                nearest = min(nearest, fib)
+            else:
+                break
+        lookup[value] = nearest
+    
+    return lookup
+
 class VideoApp:
     def __init__(self, root):
         self.root = root
@@ -144,9 +289,20 @@ class VideoApp:
         # self.prime_lookup = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251]
         self.prime_lookup = precompute_nearest_primes(255)
 
+        # Real Fibonacci numbers
+        self.fib_lookup = precompute_nearest_fibonacci(255)
+
+        # Matrix Digital Rain
+        self.transformer_matrix_columns = None
+        self.transformer_matrix_font_scale = None
+
+        # Mondrian 2 Settings
+        self.mondrian_regions = None
+
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Matrix Digital Rain": self.transformer_matrix,
             "Incremental Encode": self.transformer_incremental,
             "Vectorwave": self.transformer_vectorwave,
             "Fibonacci Compression": self.transformer_fibonacci,
@@ -161,6 +317,9 @@ class VideoApp:
             "Halftone 3D": self.transformer_halftone_3d,
             "Magic Area": self.transformer_magic_area,
             "Prime RGB": self.transformer_prime_rgb,
+            "Fibonacci RGB": self.transformer_fibonacci_rgb,
+            "Mondrian": self.transformer_mondrian,
+            "Mondrian 2": self.transformer_mondrian_2,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -280,6 +439,81 @@ class VideoApp:
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
+    def compute_complexity_and_subdivide(self, frame, x, y, w, h, threshold=5000, min_size=40):
+        """Compute complexity of a region and subdivide deterministically if complex."""
+        roi = frame[y:y+h, x:x+w]
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray_roi, 50, 150)
+        complexity = np.sum(edges)
+
+        if complexity > threshold and w > min_size and h > min_size:
+            # Deterministic split: 40% and 60% points
+            if w > h:  # Vertical split
+                split1 = x + int(w * 0.4)
+                split2 = x + int(w * 0.6)
+                return [
+                    (x, y, split1 - x, h),
+                    (split1, y, split2 - split1, h),
+                    (split2, y, x + w - split2, h)
+                ]
+            else:  # Horizontal split
+                split1 = y + int(h * 0.4)
+                split2 = y + int(h * 0.6)
+                return [
+                    (x, y, w, split1 - y),
+                    (x, split1, w, split2 - split1),
+                    (x, split2, w, y + h - split2)
+                ]
+        return [(x, y, w, h)]
+
+    def get_dominant_color(self, roi):
+        """Find the most dominant color in a region from MONDRIAN_PALETTE."""
+        pixels = roi.reshape(-1, 3)
+        distances = np.sqrt(np.sum((MONDRIAN_PALETTE - pixels[:, None]) ** 2, axis=2))
+        closest_colors = np.argmin(distances, axis=1)
+        hist = np.bincount(closest_colors, minlength=len(MONDRIAN_PALETTE))
+        return MONDRIAN_PALETTE[np.argmax(hist)]
+
+    def assign_colors(self, regions, dominant_colors):
+        """Assign colors to regions, avoiding identical colors for neighbors."""
+        assigned_colors = []
+        for i, (x, y, w, h) in enumerate(regions):
+            neighbors = []
+            # Check 4-connectivity for adjacency
+            for j, (x2, y2, w2, h2) in enumerate(regions[:i]):
+                if (x + w == x2 and y < y2 + h2 and y + h > y2) or \
+                (x2 + w2 == x and y < y2 + h2 and y + h > y2) or \
+                (y + h == y2 and x < x2 + w2 and x + w > x2) or \
+                (y2 + h2 == y and x < x2 + w2 and x + w > x2):
+                    neighbors.append(j)
+            
+            # Avoid neighbor colors
+            neighbor_colors = [assigned_colors[n] for n in neighbors if n < len(assigned_colors)]
+            candidate_color = dominant_colors[i]
+            while candidate_color.tolist() in [c.tolist() for c in neighbor_colors]:
+                candidate_idx = (np.argmax(np.all(MONDRIAN_PALETTE == candidate_color, axis=1)) + 1) % len(MONDRIAN_PALETTE)
+                candidate_color = MONDRIAN_PALETTE[candidate_idx]
+            assigned_colors.append(candidate_color)
+        return assigned_colors
+
+    def create_region_palette(self, dominant_color):
+        """Create a 5-color palette for a region, excluding black."""
+        distances = np.sqrt(np.sum((MONDRIAN_PALETTE - dominant_color) ** 2, axis=1))
+        sorted_indices = np.argsort(distances)
+        # Pick 5 closest colors, excluding pure black (reserved for lines)
+        palette = MONDRIAN_PALETTE[sorted_indices[:6]]  # Take 6 to filter black
+        palette = palette[~np.all(palette == [0, 0, 0], axis=1)][:5]  # Exclude black, take 5
+        if len(palette) < 5:  # Fallback if not enough colors
+            palette = np.vstack([palette, MONDRIAN_PALETTE[:5 - len(palette)]])
+        return palette
+
+    def map_pixels(self, roi, palette):
+        """Map region pixels to the nearest color in the 5-color palette."""
+        pixels = roi.reshape(-1, 3)
+        distances = np.sqrt(np.sum((palette - pixels[:, None]) ** 2, axis=2))
+        closest_colors = np.argmin(distances, axis=1)
+        return palette[closest_colors].reshape(roi.shape)
+
     def transformer_dummy(self, frame):
         return frame
     
@@ -289,6 +523,145 @@ class VideoApp:
         output = self.prime_lookup[frame]
         # print(f"Total time: {(time.time() - start_total)*1000:.1f}ms")
         return output
+    
+    def transformer_fibonacci_rgb(self, frame):
+        """
+        Transform an RGB frame by rounding each component to the nearest Fibonacci number.
+        
+        Args:
+            frame (np.ndarray): Input frame (RGB or BGR, uint8).
+        
+        Returns:
+            np.ndarray: Processed frame with each RGB component rounded to the nearest Fibonacci number.
+        """
+        frame = frame.astype(np.uint8)
+        output = self.fib_lookup[frame]
+        return output
+
+    def transformer_matrix(self, frame):
+        """
+        Apply a Matrix digital rain effect overlay on the frame.
+        
+        Args:
+            self: The VideoApp instance.
+            frame (np.ndarray): Input frame (BGR, uint8).
+        
+        Returns:
+            np.ndarray: Processed frame with Matrix effect.
+        """
+        # Ensure frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        height, width = frame.shape[:2]
+        
+        # Create a black overlay (semi-transparent)
+        overlay = np.zeros_like(frame, dtype=np.uint8)
+        overlay[:] = (3, 3, 3)  # Background color: Rich Black (#030303)
+        
+        # Colors for the characters
+        bright_green = (1, 186, 54)  # #36BA01
+        dark_green = (41, 133, 0)    # #008529
+        
+        # Initialize columns if not already done
+        if self.transformer_matrix_columns is None:
+            column_width = 20  # Pixels between columns
+            num_columns = width // column_width
+            self.transformer_matrix_columns = [
+                MatrixColumn(x * column_width, height, random.randint(5, 15))
+                for x in range(num_columns)
+            ]
+            self.transformer_matrix_font_scale = 0.6  # Adjust font size for readability
+        
+        # Update and draw each column
+        for column in self.transformer_matrix_columns:
+            column.update()
+            column.draw(overlay, bright_green, dark_green, self.transformer_matrix_font_scale)
+        
+        # Blend the overlay with the original frame
+        alpha = 0.9  # Transparency of the Matrix effect (0 = fully transparent, 1 = fully opaque)
+        output = cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0.0)
+        
+        return output
+    def transformer_mondrian_2(self, frame):
+        """Apply the new Mondrian filter with complexity-based divisions and pixel mapping."""
+        h, w, _ = frame.shape
+        output_frame = frame.copy()
+
+        # Step 1: Subdivide based on complexity
+        regions = []
+        grid_size = 8  # Matches your display size (640x480 divisible by 8)
+        for i in range(0, h, h // grid_size):
+            for j in range(0, w, w // grid_size):
+                sub_regions = self.compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
+                regions.extend(sub_regions)
+
+        # Step 2: Assign colors with variation
+        dominant_colors = [self.get_dominant_color(frame[y:y+h, x:x+w]) for (x, y, w, h) in regions]
+        assigned_colors = self.assign_colors(regions, dominant_colors)
+
+        # Step 3: Process each region
+        for (x, y, w, h), color in zip(regions, assigned_colors):
+            if w < 20 or h < 20:
+                continue
+
+            # Create 5-color palette and map pixels
+            region_palette = self.create_region_palette(color)
+            roi = output_frame[y:y+h, x:x+w]
+            mapped_roi = self.map_pixels(roi, region_palette)
+            output_frame[y:y+h, x:x+w] = mapped_roi
+
+            # Draw black lines
+            thickness = max(2, min(6, int((w + h) / 50)))
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
+
+        return output_frame
+    
+    def transformer_mondrian(self, frame):
+        h, w, _ = frame.shape
+
+        # Convert to grayscale and detect edges
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+
+        # Dilate edges to enhance divisions clearly
+        edges_dilated = cv2.dilate(edges, np.ones((3,3)), iterations=2)
+
+        # Find contours to identify rectangular regions
+        contours, _ = cv2.findContours(edges_dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Prepare output frame
+        mondrian_frame = np.full_like(frame, 255)  # start with white background
+
+        # Process each region
+        for cnt in contours:
+            # Approximate contour to rectangles
+            x, y, rect_w, rect_h = cv2.boundingRect(cnt)
+
+            # Ignore very small regions (noise)
+            if rect_w < 20 or rect_h < 20:
+                continue
+
+            # Extract region of interest
+            roi = frame[y:y+rect_h, x:x+rect_w]
+
+            # Calculate the average color of region
+            avg_color = np.mean(roi.reshape(-1, 3), axis=0).astype(np.uint8)
+
+            # Snap average color to closest Mondrian palette color
+            mondrian_region_color = mondrian_color(avg_color)
+
+            # Create subtle gradient within the rectangle
+            grad_rect = np.zeros((rect_h, rect_w, 3), dtype=np.uint8)
+            for i in range(rect_h):
+                gradient_factor = 1 - (i / rect_h) * 0.2  # Slight vertical gradient
+                grad_rect[i] = np.clip(mondrian_region_color * gradient_factor, 0, 255)
+
+            # Apply colored rectangle with gradient
+            mondrian_frame[y:y+rect_h, x:x+rect_w] = grad_rect
+
+            # Draw black borders (bold outlines)
+            cv2.rectangle(mondrian_frame, (x, y), (x+rect_w, y+rect_h), (0,0,0), thickness=3)
+
+        return mondrian_frame
     
     def transformer_incremental(self, frame):
         # Encode the frame
