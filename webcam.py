@@ -439,31 +439,58 @@ class VideoApp:
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
-    def compute_complexity_and_subdivide(self, frame, x, y, w, h, threshold=5000, min_size=40):
-        """Compute complexity of a region and subdivide deterministically if complex."""
+    def compute_complexity_and_subdivide(self, frame, x, y, w, h, min_size=40):
+        """Compute complexity based on color variation and subdivide into 4 regions if complex."""
         roi = frame[y:y+h, x:x+w]
-        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray_roi, 50, 150)
-        complexity = np.sum(edges)
+        if w < min_size or h < min_size:
+            return [(x, y, w, h)]
 
-        if complexity > threshold and w > min_size and h > min_size:
-            # Deterministic split: 40% and 60% points
-            if w > h:  # Vertical split
-                split1 = x + int(w * 0.4)
-                split2 = x + int(w * 0.6)
-                return [
-                    (x, y, split1 - x, h),
-                    (split1, y, split2 - split1, h),
-                    (split2, y, x + w - split2, h)
-                ]
-            else:  # Horizontal split
-                split1 = y + int(h * 0.4)
-                split2 = y + int(h * 0.6)
-                return [
-                    (x, y, w, split1 - y),
-                    (x, split1, w, split2 - split1),
-                    (x, split2, w, y + h - split2)
-                ]
+        # Count current lines to enforce limits
+        if hasattr(self, 'mondrian_h_lines') and hasattr(self, 'mondrian_v_lines'):
+            h_count = len(self.mondrian_h_lines)
+            v_count = len(self.mondrian_v_lines)
+        else:
+            h_count = v_count = 0
+
+        # Midpoint for potential 4-way split
+        mid_x = x + w // 2
+        mid_y = y + h // 2
+
+        # Sample four quadrants around the midpoint (small patches to reduce computation)
+        patch_size = min(w, h) // 4
+        if patch_size < 4:  # Ensure patches are large enough
+            return [(x, y, w, h)]
+
+        top = frame[max(y, mid_y - patch_size):mid_y, mid_x - patch_size:mid_x + patch_size]
+        bottom = frame[mid_y:min(y + h, mid_y + patch_size), mid_x - patch_size:mid_x + patch_size]
+        left = frame[mid_y - patch_size:mid_y + patch_size, max(x, mid_x - patch_size):mid_x]
+        right = frame[mid_y - patch_size:mid_y + patch_size, mid_x:min(x + w, mid_x + patch_size)]
+
+        # Compute color variance for each quadrant
+        variances = [
+            np.var(top.reshape(-1, 3), axis=0).sum() if top.size > 0 else 0,
+            np.var(bottom.reshape(-1, 3), axis=0).sum() if bottom.size > 0 else 0,
+            np.var(left.reshape(-1, 3), axis=0).sum() if left.size > 0 else 0,
+            np.var(right.reshape(-1, 3), axis=0).sum() if right.size > 0 else 0
+        ]
+
+        # Complexity: all quadrants must have significant variation (e.g., > 1000 total variance)
+        total_variance = sum(variances)
+        min_variance_per_quadrant = 250  # Threshold for "significant" variation per quadrant
+        if total_variance > 1000 and all(v > min_variance_per_quadrant for v in variances) and \
+        h_count < 15 and v_count < 20:
+            # 4-way split: add new horizontal and vertical lines
+            if not hasattr(self, 'mondrian_h_lines'):
+                self.mondrian_h_lines = set()
+                self.mondrian_v_lines = set()
+            self.mondrian_h_lines.add(mid_y)
+            self.mondrian_v_lines.add(mid_x)
+            return [
+                (x, y, w // 2, h // 2),           # Top-left
+                (mid_x, y, w - w // 2, h // 2),   # Top-right
+                (x, mid_y, w // 2, h - h // 2),   # Bottom-left
+                (mid_x, mid_y, w - w // 2, h - h // 2)  # Bottom-right
+            ]
         return [(x, y, w, h)]
 
     def get_dominant_color(self, roi):
@@ -582,24 +609,33 @@ class VideoApp:
         
         return output
     def transformer_mondrian_2(self, frame):
-        """Apply the new Mondrian filter with complexity-based divisions and pixel mapping."""
+        """Apply the Mondrian filter, updating complexity model every 30 frames."""
         h, w, _ = frame.shape
         output_frame = frame.copy()
 
-        # Step 1: Subdivide based on complexity
-        regions = []
-        grid_size = 8  # Matches your display size (640x480 divisible by 8)
-        for i in range(0, h, h // grid_size):
-            for j in range(0, w, w // grid_size):
-                sub_regions = self.compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
-                regions.extend(sub_regions)
+        # Update complexity model every 30 frames
+        if not hasattr(self, 'frame_count'):  # Ensure frame_count exists
+            self.frame_count = 0
+        if not hasattr(self, 'mondrian_regions') or self.mondrian_regions is None or self.frame_count % 30 == 0:
+            # Reset line trackers
+            self.mondrian_h_lines = set()
+            self.mondrian_v_lines = set()
+            
+            # Step 1: Subdivide based on complexity
+            regions = []
+            grid_size = 8  # Matches 640x480 divisible by 8
+            for i in range(0, h, h // grid_size):
+                for j in range(0, w, w // grid_size):
+                    sub_regions = self.compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
+                    regions.extend(sub_regions)
+            self.mondrian_regions = regions
+            
+            # Step 2: Assign colors with variation (only compute once per update)
+            dominant_colors = [self.get_dominant_color(frame[y:y+h, x:x+w]) for (x, y, w, h) in regions]
+            self.mondrian_colors = self.assign_colors(regions, dominant_colors)
 
-        # Step 2: Assign colors with variation
-        dominant_colors = [self.get_dominant_color(frame[y:y+h, x:x+w]) for (x, y, w, h) in regions]
-        assigned_colors = self.assign_colors(regions, dominant_colors)
-
-        # Step 3: Process each region
-        for (x, y, w, h), color in zip(regions, assigned_colors):
+        # Step 3: Process each region using cached layout
+        for (x, y, w, h), color in zip(self.mondrian_regions, self.mondrian_colors):
             if w < 20 or h < 20:
                 continue
 
@@ -613,6 +649,7 @@ class VideoApp:
             thickness = max(2, min(6, int((w + h) / 50)))
             cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
 
+        self.frame_count += 1
         return output_frame
     
     def transformer_mondrian(self, frame):
