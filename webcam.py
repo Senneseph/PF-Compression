@@ -1715,9 +1715,198 @@ class VideoApp:
 
         return annotated_frame
     
-    
+    def encode_24_15bit_compress(self, frame):
+        """
+        Compress a 640x480 frame using a 15-bit lookup index and a 2^15 color palette.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (lookup_map, palette)
+                - lookup_map: Array of shape (480, 640) with uint16 values (15-bit indices).
+                - palette: Array of shape (32768, 3) with uint8 values (RGB colors).
+        """
+        h, w, _ = frame.shape
+        assert h == 480 and w == 640, "Frame must be 640x480"
 
-    def transformer_incremental_encode(self, frame):
+        # Step 1: Extract unique 24-bit RGB colors
+        pixels = frame.reshape(-1, 3)  # Shape: (307200, 3)
+        unique_colors = np.unique(pixels, axis=0)  # Shape: (31455, 3)
+        num_unique_colors = len(unique_colors)
+        print(f"Number of unique colors: {num_unique_colors}")
+
+        # Step 2: Create the palette (2^15 = 32768 slots)
+        palette = np.zeros((32768, 3), dtype=np.uint8)
+        if num_unique_colors <= 32768:
+            # Lossless: Store all unique colors
+            palette[:num_unique_colors] = unique_colors
+        else:
+            # Lossy: Select the top 32768 colors by frequency
+            # Compute frequency of each color
+            pixels_tuples = [tuple(pixel) for pixel in pixels]
+            from collections import Counter
+            color_counts = Counter(pixels_tuples)
+            # Sort by frequency (most common first)
+            sorted_colors = sorted(color_counts.items(), key=lambda x: x[1], reverse=True)
+            top_colors = [np.array(color, dtype=np.uint8) for color, _ in sorted_colors[:32768]]
+            palette = np.array(top_colors, dtype=np.uint8)
+
+        # Step 3: Create a mapping from RGB to palette index
+        # For lossless case, this is straightforward
+        color_to_index = {tuple(color): idx for idx, color in enumerate(unique_colors)}
+
+        # Step 4: Create the lookup map
+        lookup_map = np.zeros((h, w), dtype=np.uint16)  # 15-bit indices
+        for i in range(h):
+            for j in range(w):
+                pixel = tuple(frame[i, j])
+                if pixel in color_to_index:
+                    # Direct match (lossless)
+                    lookup_map[i, j] = color_to_index[pixel]
+                else:
+                    # Find closest color in palette (lossy case)
+                    pixel_array = np.array(pixel, dtype=np.int32)
+                    distances = np.sum((palette - pixel_array) ** 2, axis=1)
+                    closest_idx = np.argmin(distances)
+                    lookup_map[i, j] = closest_idx
+
+        return lookup_map, palette
+
+    def decode_24_15bit_compress(self, lookup_map, palette):
+        """
+        Decompress a frame using a 15-bit lookup map and palette.
+        
+        Args:
+            lookup_map: Array of shape (480, 640) with uint16 values (15-bit indices).
+            palette: Array of shape (32768, 3) with uint8 values (RGB colors).
+        
+        Returns:
+            reconstructed_frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        """
+        h, w = lookup_map.shape
+        reconstructed_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        for i in range(h):
+            for j in range(w):
+                idx = lookup_map[i, j]
+                reconstructed_frame[i, j] = palette[idx]
+        return reconstructed_frame
+
+    def transformer_24_15bit_compress(self, frame):
+        """
+        Simulate 24-bit to 15-bit + palette compression and decompression.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            reconstructed_frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        """
+        lookup_map, palette = self.encode_24_15bit_compress(frame)
+        reconstructed_frame = self.decode_24_15bit_compress(lookup_map, palette)
+        return reconstructed_frame
+    
+    def transformer_analytics_frame_match_dummy(self, frame):
+        """
+        Adds info from the analytics_fram_match function to the frame and returns it.
+        """
+        return self.analytics_frame_match(frame, frame)
+    
+    def analytics_frame_match(self, original_frame, output_frame):
+        """
+        Compare original and output frames, compute bit-level and frame-level match percentages,
+        and overlay the metrics on the output frame.
+        
+        Args:
+            original_frame: NumPy array of shape (h, w, 3) with uint8 values (RGB).
+            output_frame: NumPy array of shape (h, w, 3) with uint8 values (RGB).
+        
+        Returns:
+            annotated_frame: NumPy array of shape (h, w, 3) with metrics overlaid.
+        """
+        # Ensure frames are compatible
+        assert original_frame.shape == output_frame.shape, "Frames must have the same shape"
+        assert original_frame.dtype == np.uint8 and output_frame.dtype == np.uint8, "Frames must be uint8"
+        assert original_frame.shape[2] == 3, "Frames must have 3 channels (RGB)"
+        h, w, _ = original_frame.shape
+
+        # Total number of pixels and bits
+        total_pixels = h * w
+        total_bits = total_pixels * 24  # 24 bits per pixel (RGB)
+
+        # Compute bit-level match
+        # Convert RGB to 24-bit integers: R * 2^16 + G * 2^8 + B
+        original_int = (original_frame[:, :, 0].astype(np.uint32) << 16) + \
+                    (original_frame[:, :, 1].astype(np.uint32) << 8) + \
+                        original_frame[:, :, 2].astype(np.uint32)
+        output_int = (output_frame[:, :, 0].astype(np.uint32) << 16) + \
+                    (output_frame[:, :, 1].astype(np.uint32) << 8) + \
+                    output_frame[:, :, 2].astype(np.uint32)
+
+        # XOR to find differing bits
+        xor_result = original_int ^ output_int
+
+        # Count matching bits (where XOR is 0)
+        # We can use np.unpackbits to convert to bits, but it's faster to count 0s in the XOR
+        # Use a loop over bits (0 to 23) to count matches
+        matching_bits = 0
+        for bit in range(24):
+            bit_mask = 1 << bit
+            matching_bits += np.sum((xor_result & bit_mask) == 0)
+        bit_match_percent = (matching_bits / total_bits) * 100
+
+        # Compute frame-level match per channel
+        r_matches = np.sum(original_frame[:, :, 0] == output_frame[:, :, 0])
+        g_matches = np.sum(original_frame[:, :, 1] == output_frame[:, :, 1])
+        b_matches = np.sum(original_frame[:, :, 2] == output_frame[:, :, 2])
+        r_match_percent = (r_matches / total_pixels) * 100
+        g_match_percent = (g_matches / total_pixels) * 100
+        b_match_percent = (b_matches / total_pixels) * 100
+
+        # Create a copy of the output frame to annotate
+        annotated_frame = output_frame.copy()
+
+        # Define text properties
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        color = (255, 255, 255)  # White text
+        thickness = 1
+        line_spacing = 20
+        start_x, start_y = 10, 20  # Top-left corner
+
+        # Prepare the metrics text
+        metrics = [
+            f"Bit Match: {bit_match_percent:.2f}%",
+            f"R Match: {r_match_percent:.2f}%",
+            f"G Match: {g_match_percent:.2f}%",
+            f"B Match: {b_match_percent:.2f}%"
+        ]
+
+        # Overlay each metric on the frame
+        for i, metric in enumerate(metrics):
+            y = start_y + i * line_spacing
+            (text_w, text_h), _ = cv2.getTextSize(metric, font, font_scale, thickness)
+            cv2.rectangle(
+                annotated_frame,
+                (start_x, y - text_h - 2),
+                (start_x + text_w, y + 2),
+                (0, 0, 0),  # Black background
+                -1
+            )
+            cv2.putText(
+                annotated_frame,
+                metric,
+                (start_x, y),
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA
+            )
+
+        return annotated_frame
+
+    def encode_incremental(self, frame):
         h, w, _ = frame.shape
         blocks_vertical = h // self.block_size
         blocks_horizontal = w // self.block_size
@@ -1737,7 +1926,7 @@ class VideoApp:
         return xor_constraint.tobytes()  # return bytes directly for compactness
 
     # Decoder function (for incremental reconstruction from constraints):
-    def transformer_incremental_decode(self, encoded_data):
+    def decode_incremental(self, encoded_data):
         h, w = self.frame_height, self.frame_width  # set these in __init__
         blocks_vertical = h // self.block_size
         blocks_horizontal = w // self.block_size
