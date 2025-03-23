@@ -298,10 +298,24 @@ class VideoApp:
 
         # Mondrian 2 Settings
         self.mondrian_regions = None
+        self.mondrian_map = None
+
+        # Diagonal, Vertical, and Horizontal Vision
+        self.width = 640
+        self.height = 480
+        self.initialize_reference_patterns()
+
+        # Vertical Bitfield Pattern Prototype
+        # Vertical Bitfield Pattern
+        self.initialize_vertical_bitfield_reference_patterns()
 
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "VBPV Prototype": self.transformer_vertical_bitfield_pattern_prototype,
+            "VBPatternVision": self.transformer_vertical_bitfield_pattern,
+            "DiagonalVision": self.transformer_diagonal_vision,
+            "VerticalVision": self.transformer_vertical_bitfield,
             "Matrix Digital Rain": self.transformer_matrix,
             "Incremental Encode": self.transformer_incremental,
             "Vectorwave": self.transformer_vectorwave,
@@ -440,59 +454,43 @@ class VideoApp:
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
-    def compute_complexity_and_subdivide(self, frame, x, y, w, h, min_size=40):
-        """Compute complexity using gradient magnitude and subdivide with color assignment."""
-        roi = frame[y:y+h, x:x+w]
-        if w < min_size or h < min_size:
-            # Assign a color, ensuring it’s not overused and doesn’t match neighbors
-            return [(x, y, w, h, self._assign_color(frame, x, y, w, h))]
+    def find_complexity_points(self, frame, num_points=375):
+        """Identify points of high complexity across the image."""
+        h, w, _ = frame.shape
+        complexity_map = np.zeros((h, w), dtype=np.float32)
 
-        # Count current lines to enforce limits
-        if hasattr(self, 'mondrian_h_lines') and hasattr(self, 'mondrian_v_lines'):
-            h_count = len(self.mondrian_h_lines)
-            v_count = len(self.mondrian_v_lines)
-        else:
-            h_count = v_count = 0
-            self.mondrian_h_lines = set()
-            self.mondrian_v_lines = set()
-            self.color_counts = {tuple(color): 0 for color in MONDRIAN_PALETTE}  # Track usage
-
-        # Midpoint for potential 4-way split
-        mid_x = x + w // 2
-        mid_y = y + h // 2
-
-        # Compute gradient magnitude around the midpoint to assess complexity
-        roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        grad_x = cv2.Sobel(roi_gray, cv2.CV_32F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(roi_gray, cv2.CV_32F, 0, 1, ksize=3)
+        # Compute complexity for the entire image
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
         grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-        center_region = grad_mag[max(0, h//4):min(h, 3*h//4), max(0, w//4):min(w, 3*w//4)]
-        complexity = np.mean(center_region) if center_region.size > 0 else 0
+        
+        # Compute entropy in a sliding window
+        entropy_map = np.zeros((h, w), dtype=np.float32)
+        window_size = 16
+        for i in range(0, h - window_size, window_size // 2):
+            for j in range(0, w - window_size, window_size // 2):
+                roi = gray[i:i+window_size, j:j+window_size]
+                if roi.size == 0:
+                    continue
+                hist = cv2.calcHist([roi], [0], None, [256], [0, 256])
+                hist = hist / hist.sum()
+                entropy = -np.sum(hist * np.log2(hist + 1e-10))
+                entropy_map[i:i+window_size, j:j+window_size] = entropy
 
-        # Split if complexity is high and within line limits
-        if complexity > 50 and h_count < 15 and v_count < 20:  # Threshold tuned for contrast
-            self.mondrian_h_lines.add(mid_y)
-            self.mondrian_v_lines.add(mid_x)
-            
-            # Define sub-regions
-            sub_regions = [
-                (x, y, w // 2, h // 2),           # Top-left
-                (mid_x, y, w - w // 2, h // 2),   # Top-right
-                (x, mid_y, w // 2, h - h // 2),   # Bottom-left
-                (mid_x, mid_y, w - w // 2, h - h // 2)  # Bottom-right
-            ]
-            
-            # Assign colors to sub-regions
-            result = []
-            used_colors = set()  # Colors used in this split
-            for rx, ry, rw, rh in sub_regions:
-                color = self._assign_color(frame, rx, ry, rw, rh, exclude_colors=used_colors)
-                used_colors.add(tuple(color))
-                result.append((rx, ry, rw, rh, color))
-            return result
-        else:
-            color = self._assign_color(frame, x, y, w, h)
-            return [(x, y, w, h, color)]
+        # Combine gradient and entropy
+        complexity_map = grad_mag * entropy_map
+
+        # Find top 375 points
+        points = []
+        complexity_flat = complexity_map.flatten()
+        indices = np.argsort(-complexity_flat)[:num_points]  # Top values
+        for idx in indices:
+            y = idx // w
+            x = idx % w
+            points.append((x, y, complexity_map[y, x], grad_x[y, x], grad_y[y, x]))
+
+        return sorted(points, key=lambda p: p[2], reverse=True)  # Sort by complexity
 
     def _assign_color(self, frame, x, y, w, h, exclude_colors=None):
         """Assign a color to a region, ensuring no adjacent duplicates and balanced distribution."""
@@ -552,16 +550,14 @@ class VideoApp:
         if exclude_colors is None:
             exclude_colors = set()
 
-        # Tricolor palette
         tricolor = [
             (227, 66, 52),   # Mondrian Red
             (238, 210, 20),  # Mondrian Yellow
             (39, 89, 180)    # Mondrian Blue
         ]
 
-        # Check neighbor colors
         neighbors = set()
-        for prev_x, prev_y, prev_w, prev_h, prev_color in self.mondrian_map or []:
+        for prev_x, prev_y, prev_w, prev_h, prev_color, _ in self.mondrian_map or []:
             if (x + w == prev_x and y < prev_y + prev_h and y + h > prev_y) or \
             (prev_x + prev_w == x and y < prev_y + prev_h and y + h > prev_y) or \
             (y + h == prev_y and x < prev_x + prev_w and x + w > prev_x) or \
@@ -569,31 +565,77 @@ class VideoApp:
                 neighbors.add(tuple(prev_color))
 
         forbidden_colors = exclude_colors | neighbors
-
-        # Prefer underused colors
-        min_regions_per_color = 5
-        underused = [color for color, count in self.color_counts.items() if count < min_regions_per_color]
         available_colors = [color for color in tricolor if tuple(color) not in forbidden_colors]
 
-        if underused:
-            candidates = [color for color in underused if tuple(color) in {tuple(c) for c in available_colors}]
-            if not candidates:
-                candidates = available_colors
-        else:
-            candidates = available_colors
+        if not available_colors:
+            available_colors = [color for color in tricolor if tuple(color) not in exclude_colors]
 
-        if not candidates:
-            candidates = [color for color in tricolor if tuple(color) not in exclude_colors]
-
-        if not candidates:
+        if not available_colors:
             color_counts = [(count, color) for color, count in self.color_counts.items()]
             color = min(color_counts, key=lambda x: x[0])[1]
         else:
-            color_counts = [(self.color_counts.get(tuple(c), 0), c) for c in candidates]
+            color_counts = [(self.color_counts.get(tuple(c), 0), c) for c in available_colors]
             color = min(color_counts, key=lambda x: x[0])[1]
 
         self.color_counts[tuple(color)] = self.color_counts.get(tuple(color), 0) + 1
         return color
+    
+    def grow_lines(self, frame, points):
+        """Grow horizontal or vertical lines from complexity points to form rectangles."""
+        h, w, _ = frame.shape
+        h_lines = {0, h}  # Include image boundaries
+        v_lines = {0, w}
+
+        # Process each point
+        for x, y, complexity, grad_x, grad_y in points:
+            # Decide direction based on gradient
+            if abs(grad_x) > abs(grad_y):
+                # Vertical line (gradient is more horizontal, so split vertically)
+                line_y = y
+                if line_y in h_lines:
+                    continue
+                h_lines.add(line_y)
+
+                # Find nearest boundaries
+                left = max([vx for vx in v_lines if vx <= x], default=0)
+                right = min([vx for vx in v_lines if vx >= x], default=w)
+
+                # Extend if complexity is high
+                if complexity > 150:  # Threshold for continuing past boundary
+                    if left > 0:
+                        v_lines.add(left)
+                    if right < w:
+                        v_lines.add(right)
+            else:
+                # Horizontal line
+                line_x = x
+                if line_x in v_lines:
+                    continue
+                v_lines.add(line_x)
+
+                top = max([hy for hy in h_lines if hy <= y], default=0)
+                bottom = min([hy for hy in h_lines if hy >= y], default=h)
+
+                if complexity > 150:
+                    if top > 0:
+                        h_lines.add(top)
+                    if bottom < h:
+                        h_lines.add(bottom)
+
+        # Convert lines to rectangles
+        h_lines = sorted(h_lines)
+        v_lines = sorted(v_lines)
+        rectangles = []
+        for i in range(len(h_lines) - 1):
+            for j in range(len(v_lines) - 1):
+                x = v_lines[j]
+                y = h_lines[i]
+                w = v_lines[j + 1] - x
+                h = h_lines[i + 1] - y
+                if w > 0 and h > 0:
+                    rectangles.append((x, y, w, h))
+
+        return rectangles
 
     def get_dominant_color(self, roi):
         """Find the most dominant color in a region from MONDRIAN_PALETTE."""
@@ -789,42 +831,43 @@ class VideoApp:
         return output_frame
     
     def transformer_complexity_test(self, frame):
-        """Transform the frame into a grayscale heatmap of complexity information."""
+        """Visualize the new subdivisions with tricolor assignment."""
         h, w, _ = frame.shape
-        complexity_map = np.zeros((h, w), dtype=np.float32)
+        output_frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-        # Compute complexity for each potential split region
-        grid_size = 8  # Matches 640x480 divisible by 8
-        for i in range(0, h, h // grid_size):
-            for j in range(0, w, w // grid_size):
-                roi = frame[i:i + h//grid_size, j:j + w//grid_size]
-                if roi.shape[0] == 0 or roi.shape[1] == 0:
-                    continue
+        # Update the map every 30 frames
+        if not hasattr(self, 'frame_count'):
+            self.frame_count = 0
+        if not hasattr(self, 'mondrian_map') or self.mondrian_map is None or self.frame_count % 30 == 0:
+            # Find complexity points and grow lines
+            points = self.find_complexity_points(frame)
+            rectangles = self.grow_lines(frame, points)
 
-                # Compute gradient magnitude
-                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                grad_x = cv2.Sobel(roi_gray, cv2.CV_32F, 1, 0, ksize=3)
-                grad_y = cv2.Sobel(roi_gray, cv2.CV_32F, 0, 1, ksize=3)
-                grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-                grad_mean = np.mean(grad_mag) if grad_mag.size > 0 else 0
+            # Assign colors
+            self.color_counts = {
+                (227, 66, 52): 0,   # Mondrian Red
+                (238, 210, 20): 0,  # Mondrian Yellow
+                (39, 89, 180): 0    # Mondrian Blue
+            }
+            regions = []
+            for x, y, w, h in rectangles:
+                color = self._assign_tricolor(x, y, w, h)
+                regions.append((x, y, w, h, color, None))  # No palette needed for test
 
-                # Compute local entropy (texture/detail)
-                hist = cv2.calcHist([roi_gray], [0], None, [256], [0, 256])
-                hist = hist / hist.sum()  # Normalize to probability
-                entropy = -np.sum(hist * np.log2(hist + 1e-10))  # Shannon entropy
+            self.mondrian_map = regions
 
-                # Combine metrics: high gradient AND high entropy indicate complexity
-                complexity = grad_mean * entropy
-                complexity_map[i:i + h//grid_size, j:j + w//grid_size] = complexity
+        # Render the regions with their main colors
+        for x, y, w, h, color, _ in self.mondrian_map:
+            if w < 20 or h < 20:
+                continue
+            output_frame[y:y+h, x:x+w] = color
 
-        # Normalize for visualization (0-255)
-        if complexity_map.max() > 0:
-            complexity_map = (complexity_map / complexity_map.max() * 255).astype(np.uint8)
-        else:
-            complexity_map = complexity_map.astype(np.uint8)
+            # Draw black lines
+            thickness = max(2, min(6, int((w + h) / 50)))
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
 
-        # Convert to BGR for display
-        return cv2.cvtColor(complexity_map, cv2.COLOR_GRAY2BGR)
+        self.frame_count += 1
+        return output_frame
     
     def transformer_mondrian(self, frame):
         h, w, _ = frame.shape
@@ -883,6 +926,582 @@ class VideoApp:
         
         return decoded_frame
     
+    def get_diagonal_indices(self, start_x, start_y, width, height):
+        """Compute the indices of a diagonal starting at (start_x, start_y) with wrapping."""
+        indices = []
+        x, y = start_x, start_y
+        diagonal_length = max(width, height)  # Ensure we cover the longest dimension
+
+        for _ in range(diagonal_length):
+            indices.append((x, y))
+            x = (x + 1) % width
+            y = (y + 1) % height
+
+        return indices
+
+    def transformer_diagonal_vision(self, frame):
+        """Apply the Diagonal Vision transformer by processing bit patterns along diagonals."""
+        h, w, _ = frame.shape
+        output_frame = frame.copy().astype(np.uint8)  # Ensure output_frame is uint8
+
+        # Process diagonals starting from top row and left column
+        diagonal_starts = [(0, j) for j in range(w)] + [(i, 0) for i in range(1, h)]
+
+        for start_x, start_y in diagonal_starts:
+            # Get the indices of the diagonal
+            indices = self.get_diagonal_indices(start_x, start_y, w, h)
+            
+            # For each color channel (R, G, B)
+            for channel in range(3):
+                # For each bit position (0-7)
+                for bit_pos in range(8):
+                    # Extract the nth bit from the channel for all pixels in the diagonal
+                    bits = []
+                    for x, y in indices:
+                        pixel_value = frame[y, x, channel]
+                        bit = (pixel_value >> bit_pos) & 1
+                        bits.append(bit)
+
+                    # Compare to the two patterns: 101010... and 010101...
+                    pattern_1 = [1 if i % 2 == 0 else 0 for i in range(len(bits))]  # 101010...
+                    pattern_0 = [0 if i % 2 == 0 else 1 for i in range(len(bits))]  # 010101...
+
+                    # Compute mismatches
+                    mismatches_1 = sum(a != b for a, b in zip(bits, pattern_1))
+                    mismatches_0 = sum(a != b for a, b in zip(bits, pattern_0))
+
+                    # Choose the pattern with fewer mismatches
+                    chosen_pattern = pattern_1 if mismatches_1 <= mismatches_0 else pattern_0
+
+                    # Assign the chosen pattern to the nth bit of the channel for all pixels in the diagonal
+                    for idx, (x, y) in enumerate(indices):
+                        current_value = output_frame[y, x, channel]  # Already uint8
+                        # Clear the nth bit
+                        mask = np.uint8(255 - (1 << bit_pos))  # Compute mask as 255 - (1 << bit_pos)
+                        current_value = current_value & mask
+                        # Set the nth bit according to the chosen pattern
+                        bit_value = np.uint8(chosen_pattern[idx] << bit_pos)
+                        current_value = current_value | bit_value
+                        output_frame[y, x, channel] = current_value
+
+        return output_frame
+    
+    def initialize_reference_patterns(self):
+        """Initialize two 640x480x3 frames with 10101010... and 01010101... patterns."""
+        # Create a 480-length pattern for each
+        pattern_1 = np.array([1 if i % 2 == 0 else 0 for i in range(self.height)], dtype=np.uint8)  # 10101010...
+        pattern_0 = np.array([0 if i % 2 == 0 else 1 for i in range(self.height)], dtype=np.uint8)  # 01010101...
+
+        # Convert patterns to 8-bit values (10101010 or 01010101)
+        byte_1 = int('10101010', 2)  # 170
+        byte_0 = int('01010101', 2)  # 85
+
+        # Create 640x480x3 frames
+        self.pattern_frame_1 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.pattern_frame_0 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+        # Fill each column with the repeating pattern
+        for col in range(self.width):
+            # For pattern_1 (10101010...), all channels get byte_1
+            self.pattern_frame_1[:, col, :] = byte_1
+            # For pattern_0 (01010101...), all channels get byte_0
+            self.pattern_frame_0[:, col, :] = byte_0
+
+    def transformer_vertical_bitfield(self, frame):
+        """Encode the frame using a reversible process with pattern dominance."""
+        h, w, _ = frame.shape
+        assert w == 640 and h == 480, "Expected frame size 640x480"
+
+        # Perform bitwise AND with each pattern frame
+        matches_1 = frame & self.pattern_frame_1  # 640x480x3
+        matches_0 = frame & self.pattern_frame_0  # 640x480x3
+
+        # Sum matches along the height axis to get per-column totals
+        total_matches_1 = np.sum(matches_1, axis=0)  # Shape: (640, 3)
+        total_matches_0 = np.sum(matches_0, axis=0)  # Shape: (640, 3)
+
+        # Compute matches for the full pixel
+        full_pixel_matches_1 = np.sum(total_matches_1, axis=1)  # Shape: (640,)
+        full_pixel_matches_0 = np.sum(total_matches_0, axis=1)  # Shape: (640,)
+
+        # Create the 640x4 bitfield
+        bitfield = np.zeros((w, 4), dtype=np.uint8)
+        bitfield[:, 0] = (full_pixel_matches_1 >= full_pixel_matches_0).astype(np.uint8)
+        bitfield[:, 1:4] = (total_matches_1 >= total_matches_0).astype(np.uint8)
+
+        # Step 1: Build the base frame using the full pixel bitfield (column 0)
+        base_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        pattern_1_value = 170  # 10101010
+        pattern_0_value = 85   # 01010101
+
+        for col in range(w):
+            pattern_value = pattern_1_value if bitfield[col, 0] == 1 else pattern_0_value
+            base_frame[:, col, :] = pattern_value
+
+        # Step 2: Compute the difference frame
+        difference_frame = (frame.astype(np.int16) - base_frame.astype(np.int16)) % 256
+        difference_frame = difference_frame.astype(np.uint8)
+
+        # Step 3: Scale the difference to a smaller range (0-15) for modulation
+        # This ensures the pattern dominates the output
+        scaled_difference = (difference_frame // 16).astype(np.uint8)  # 0-15 range
+
+        # Step 4: Build the encoded frame by starting with the per-channel patterns
+        encoded_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        for col in range(w):
+            for channel in range(3):
+                # Use the channel-specific bitfield to choose the pattern
+                pattern_value = pattern_1_value if bitfield[col, channel + 1] == 1 else pattern_0_value
+                # Start with the pattern, then add the scaled difference
+                encoded_frame[:, col, channel] = (pattern_value + scaled_difference[:, col, channel]) % 256
+
+        # Step 5: Create a 640-bit array for 4 groups of 20 8-bit colors
+        color_group_bits = np.zeros(w, dtype=np.uint8)
+        for col in range(w):
+            group = (bitfield[col, 0] << 1) | bitfield[col, 1]  # Combine full pixel and red channel bits
+            color_group_bits[col] = group  # Values 0-3
+
+        # Store the color group bits and scaled difference for decoding
+        self.color_group_bits = color_group_bits
+        self.scaled_difference = scaled_difference  # Store for reversibility
+
+        # Return the encoded frame
+        return encoded_frame.astype(np.uint8)
+
+# next, I want to actually change the frame. I think we have the performance we were looking for (these are limited bitwise operations after all!)
+
+# Now that we have the bitfield arrays, we can do this. They are indexed like:
+# # Create the 640x4 bitfield
+# # Column 0: Full pixel (24 bits)
+# # Column 1: Red channel (8 bits)
+# # Column 2: Green channel (8 bits)
+# # Column 3: Blue channel (8 bits)
+
+# So we will use them to build a new frame. We'll take the bitfield and create a new frame where we start with populating the columns for the Full pixel, then we 
+
+    # def initialize_reference_patterns(self):
+    #     """Initialize two 640x480x3 frames with 10101010... and 01010101... patterns."""
+    #     # Create a 480-length pattern for each
+    #     pattern_1 = np.array([1 if i % 2 == 0 else 0 for i in range(self.height)], dtype=np.uint8)  # 10101010...
+    #     pattern_0 = np.array([0 if i % 2 == 0 else 1 for i in range(self.height)], dtype=np.uint8)  # 01010101...
+
+    #     # Convert patterns to 8-bit values (10101010 or 01010101)
+    #     byte_1 = int('10101010', 2)  # 170
+    #     byte_0 = int('01010101', 2)  # 85
+
+    #     # Create 640x480x3 frames
+    #     self.pattern_frame_1 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+    #     self.pattern_frame_0 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+    #     for col in range(self.width):
+    #         self.pattern_frame_1[:, col, :] = byte_1
+    #         self.pattern_frame_0[:, col, :] = byte_0
+
+    # def initialize_vertical_bitfield_reference_patterns(self):
+    #     # Existing code...
+    #     byte_1 = int('10101010', 2)  # 170
+    #     byte_0 = int('01010101', 2)  # 85
+    #     self.pattern_frame_1 = np.full((self.height, self.width, 3), byte_1, dtype=np.uint8)
+    #     self.pattern_frame_0 = np.full((self.height, self.width, 3), byte_0, dtype=np.uint8)
+
+    def get_most_common_24bit_pattern(self, column, offsets=[0, 1, 2, 3]):
+        """Find the most common 24-bit pattern in a column with bit offsets."""
+        # Column shape: (480, 3)
+        r, g, b = column[:, 0], column[:, 1], column[:, 2]
+
+        # Combine RGB into a 24-bit integer
+        rgb_values = (r.astype(np.uint32) << 16) | (g.astype(np.uint32) << 8) | b.astype(np.uint32)
+
+        # Consider offsets by shifting and masking
+        max_count = 0
+        best_pattern = None
+        for offset in offsets:
+            # Shift right by offset and mask to get 24-bit pattern
+            shifted = (rgb_values >> offset) & 0xFFFFFF
+            # Compute histogram of patterns
+            unique, counts = np.unique(shifted, return_counts=True)
+            most_common_idx = np.argmax(counts)
+            count = counts[most_common_idx]
+            pattern = unique[most_common_idx]
+            if count > max_count:
+                max_count = count
+                best_pattern = pattern
+
+        # Convert the 24-bit pattern back to RGB
+        r_pattern = (best_pattern >> 16) & 0xFF
+        g_pattern = (best_pattern >> 8) & 0xFF
+        b_pattern = best_pattern & 0xFF
+        return np.array([r_pattern, g_pattern, b_pattern], dtype=np.uint8), max_count
+    
+    def get_most_common_8bit_pattern(self, channel_values, offsets=[0, 1, 2, 3]):
+        """Find the most common 8-bit pattern in a channel with bit offsets."""
+        # Channel_values shape: (480,)
+        max_count = 0
+        best_pattern = None
+        for offset in offsets:
+            shifted = (channel_values >> offset) & 0xFF
+            unique, counts = np.unique(shifted, return_counts=True)
+            most_common_idx = np.argmax(counts)
+            count = counts[most_common_idx]
+            pattern = unique[most_common_idx]
+            if count > max_count:
+                max_count = count
+                best_pattern = pattern
+        return best_pattern, max_count
+    
+    def map_to_nearest_color(self, value, color_set):
+        """Map a value to the nearest value in the color set."""
+        return color_set[np.argmin(np.abs(color_set - value))]
+    
+    def get_top_80_colors(self, frame):
+        """Extract the 80 most common 8-bit values across all channels in the frame."""
+        # Frame shape: (480, 640, 3)
+        all_values = frame.reshape(-1, 3)  # Shape: (480*640, 3)
+        r_values = all_values[:, 0]
+        g_values = all_values[:, 1]
+        b_values = all_values[:, 2]
+        all_channel_values = np.concatenate([r_values, g_values, b_values])
+        unique, counts = np.unique(all_channel_values, return_counts=True)
+        # Sort by count and take the top 80
+        sorted_indices = np.argsort(-counts)
+        top_80 = unique[sorted_indices[:80]]
+        return top_80
+
+    def transformer_vertical_bitfield_pattern_prototype(self, frame):
+        """Create a new frame using the most common 24-bit and 8-bit patterns."""
+        h, w, _ = frame.shape
+        assert w == 640 and h == 480, "Expected frame size 640x480"
+
+        # Step 1: Get the top 80 most common 8-bit values
+        top_80_colors = self.get_top_80_colors(frame)
+
+        # Step 2: Find the most common 24-bit pattern per column
+        base_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        for col in range(w):
+            column = frame[:, col, :]  # Shape: (480, 3)
+            pattern, _ = self.get_most_common_24bit_pattern(column)
+            # Tile the pattern across the column
+            base_frame[:, col, :] = pattern
+
+        # Step 3: Compute the difference frame
+        difference_frame = (frame.astype(np.int16) - base_frame.astype(np.int16)) % 256
+        difference_frame = difference_frame.astype(np.uint8)
+
+        # Step 4: Find the most common 8-bit pattern per channel per column
+        encoded_frame = base_frame.copy()
+        for col in range(w):
+            for channel in range(3):
+                channel_values = difference_frame[:, col, channel]  # Shape: (480,)
+                pattern, _ = self.get_most_common_8bit_pattern(channel_values)
+                # Add the pattern to the base frame
+                encoded_frame[:, col, channel] = (encoded_frame[:, col, channel].astype(np.int16) + pattern) % 256
+
+        # Step 5: Map all values in the encoded frame to the nearest of the top 80 colors
+        final_frame = np.zeros_like(encoded_frame)
+        for col in range(w):
+            for channel in range(3):
+                final_frame[:, col, channel] = np.vectorize(lambda x: self.map_to_nearest_color(x, top_80_colors))(encoded_frame[:, col, channel])
+
+        # Step 6: Create a 640-bit array for 4 groups of 20 8-bit colors
+        # Use the same logic as before for consistency
+        color_group_bits = np.zeros(w, dtype=np.uint8)
+        for col in range(w):
+            # Perform bitwise AND with pattern frames to compute bitfield
+            col_matches_1 = frame[:, col, :] & self.pattern_frame_1[:, col, :]
+            col_matches_0 = frame[:, col, :] & self.pattern_frame_0[:, col, :]
+            total_matches_1 = np.sum(col_matches_1)
+            total_matches_0 = np.sum(col_matches_0)
+            bit = 1 if total_matches_1 >= total_matches_0 else 0
+            # Use the bit and the next bit (e.g., from red channel match) to decide the group
+            col_matches_1_r = frame[:, col, 0] & self.pattern_frame_1[:, col, 0]
+            col_matches_0_r = frame[:, col, 0] & self.pattern_frame_0[:, col, 0]
+            total_matches_1_r = np.sum(col_matches_1_r)
+            total_matches_0_r = np.sum(col_matches_0_r)
+            bit_r = 1 if total_matches_1_r >= total_matches_0_r else 0
+            group = (bit << 1) | bit_r
+            color_group_bits[col] = group
+
+        # Store the color group bits for later use
+        self.color_group_bits = color_group_bits
+
+        # Return the final frame
+        return final_frame.astype(np.uint8)
+    
+    def initialize_vertical_bitfield_reference_patterns(self):
+        """Initialize transformations and pattern frames for vertical bitfield processing."""
+        # 23-bit transformation: Expand from 480 to 483 pixels, trim back to 480
+        self.height_23bit = 483  # 21 groups of 23 pixels
+        self.expand_indices_23bit = np.arange(self.height)
+        self.trim_indices_23bit = np.arange(self.height)  # First 480 pixels
+
+        # 7-bit transformation: Expand from 480 to 483 values, trim back to 480
+        self.height_7bit = 483  # 69 groups of 7 pixels
+        self.expand_indices_7bit = np.arange(self.height)
+        self.trim_indices_7bit = np.arange(self.height)  # First 480 pixels
+
+        # Initialize pattern frames for color_group_bits
+        byte_1 = int('10101010', 2)  # 170
+        byte_0 = int('01010101', 2)  # 85
+        self.pattern_frame_1 = np.full((self.height, self.width, 3), byte_1, dtype=np.uint8)
+        self.pattern_frame_0 = np.full((self.height, self.width, 3), byte_0, dtype=np.uint8)
+    
+    def count_matching_bits_23(self, values, patterns, offset):
+        """Count matching bits between 23-bit values and patterns with an offset."""
+        # Values shape: (483, 640), patterns shape: (21, 640)
+        # Shift the patterns by the offset
+        shifted_patterns = ((patterns << offset) | (patterns >> (23 - offset))) & 0x7FFFFF  # Shape: (21, 640)
+        # Broadcast to match values shape
+        shifted_patterns = shifted_patterns[:, np.newaxis, :]  # Shape: (21, 1, 640)
+        values_exp = values[np.newaxis, :, :]  # Shape: (1, 483, 640)
+        # XOR to find differing bits
+        xor_result = (values_exp ^ shifted_patterns) & 0x7FFFFF  # Shape: (21, 483, 640)
+        # Count 0s (matches) using bitwise operations
+        # We can approximate by counting 1s in each byte and subtracting
+        byte1 = (xor_result >> 16) & 0xFF
+        byte2 = (xor_result >> 8) & 0xFF
+        byte3 = xor_result & 0xFF
+        bits = (np.sum(np.unpackbits(byte1, axis=0), axis=0) +
+                np.sum(np.unpackbits(byte2, axis=0), axis=0) +
+                np.sum(np.unpackbits(byte3, axis=0), axis=0))  # Shape: (21, 483, 640)
+        matching_bits = (23 - bits)  # Shape: (21, 483, 640)
+        return np.sum(matching_bits, axis=1)  # Shape: (21, 640)
+
+    def count_matching_bits_7(self, values, patterns, offset):
+        """Count matching bits between 7-bit values and patterns with an offset."""
+        # Values shape: (483, 640), patterns shape: (69, 640)
+        shifted_patterns = ((patterns << offset) | (patterns >> (7 - offset))) & 0x7F  # Shape: (69, 640)
+        shifted_patterns = shifted_patterns[:, np.newaxis, :]  # Shape: (69, 1, 640)
+        values_exp = values[np.newaxis, :, :]  # Shape: (1, 483, 640)
+        xor_result = (values_exp ^ shifted_patterns) & 0x7F  # Shape: (69, 483, 640)
+        bits = np.sum(np.unpackbits(xor_result, axis=0)[:, 1:], axis=0)  # Shape: (69, 483, 640)
+        matching_bits = (7 - bits)
+        return np.sum(matching_bits, axis=1)  # Shape: (69, 640)
+
+    def get_best_23bit_pattern(self, column):
+        """Find the best 23-bit pattern for a column by sampling 21 groups."""
+        # Column shape: (480, 3)
+        r, g, b = column[:, 0], column[:, 1], column[:, 2]
+        rgb_values = (r.astype(np.uint32) << 16) | (g.astype(np.uint32) << 8) | b.astype(np.uint32)
+        rgb_values_23 = (rgb_values >> 1) & 0x7FFFFF  # Take 23 most significant bits
+
+        # Divide into 21 groups (20 groups of 23 pixels, 1 group of 20 pixels)
+        group_size = 23
+        num_groups = 21
+        patterns = []
+        for i in range(num_groups):
+            start = i * group_size
+            end = min(start + group_size, 480)
+            group_values = rgb_values_23[start:end]
+            if len(group_values) == 0:
+                continue
+            # Take the most common pattern in the group
+            unique, counts = np.unique(group_values, return_counts=True)
+            most_common = unique[np.argmax(counts)]
+            patterns.append(most_common)
+
+        # Test each pattern with 23 offsets
+        max_matches = 0
+        best_pattern = patterns[0]
+        best_offset = 0
+        for pattern in patterns:
+            for offset in range(23):
+                matches = self.count_matching_bits_23(rgb_values_23, pattern, offset)
+                if matches > max_matches:
+                    max_matches = matches
+                    best_pattern = pattern
+                    best_offset = offset
+
+        # Apply the offset to the pattern
+        shifted_pattern = ((best_pattern << best_offset) | (best_pattern >> (23 - best_offset))) & 0x7FFFFF
+        # Convert back to RGB
+        r_pattern = ((shifted_pattern >> 15) & 0xFF) << 1
+        g_pattern = ((shifted_pattern >> 7) & 0xFF) << 1
+        b_pattern = ((shifted_pattern << 1) & 0xFF)
+        return np.array([r_pattern, g_pattern, b_pattern], dtype=np.uint8)
+
+    def get_best_7bit_pattern(self, channel_values):
+        """Find the best 7-bit pattern for a channel by sampling 69 groups."""
+        # Channel_values shape: (480,)
+        values_7 = (channel_values >> 1) & 0x7F  # Take 7 most significant bits
+
+        # Divide into 69 groups (68 groups of 7 pixels, 1 group of 4 pixels)
+        group_size = 7
+        num_groups = 69
+        patterns = []
+        for i in range(num_groups):
+            start = i * group_size
+            end = min(start + group_size, 480)
+            group_values = values_7[start:end]
+            if len(group_values) == 0:
+                continue
+            unique, counts = np.unique(group_values, return_counts=True)
+            most_common = unique[np.argmax(counts)]
+            patterns.append(most_common)
+
+        # Test each pattern with 7 offsets
+        max_matches = 0
+        best_pattern = patterns[0]
+        best_offset = 0
+        for pattern in patterns:
+            for offset in range(7):
+                matches = self.count_matching_bits_7(values_7, pattern, offset)
+                if matches > max_matches:
+                    max_matches = matches
+                    best_pattern = pattern
+                    best_offset = offset
+
+        # Apply the offset to the pattern
+        shifted_pattern = ((best_pattern << best_offset) | (best_pattern >> (7 - best_offset))) & 0x7F
+        return (shifted_pattern << 1).astype(np.uint8)
+    
+    def transformer_vertical_bitfield_pattern(self, frame):
+        """Create a new frame using the best 23-bit and 7-bit patterns with improved performance."""
+        h, w, _ = frame.shape
+        assert w == 640 and h == 480, "Expected frame size 640x480"
+
+        # Step 1: Expand the frame to 483 pixels for 23-bit processing
+        frame_expanded = np.zeros((self.height_23bit, w, 3), dtype=np.uint8)
+        frame_expanded[self.expand_indices_23bit, :, :] = frame
+
+        # Step 2: Find the best 23-bit pattern for all columns
+        r, g, b = frame_expanded[:, :, 0], frame_expanded[:, :, 1], frame_expanded[:, :, 2]
+        rgb_values = (r.astype(np.uint32) << 16) | (g.astype(np.uint32) << 8) | b.astype(np.uint32)
+        rgb_values_23 = (rgb_values >> 1) & 0x7FFFFF  # Shape: (483, 640)
+
+        # Divide into 21 groups
+        group_size = 23
+        num_groups = 21
+        patterns = np.zeros((num_groups, w), dtype=np.uint32)
+        for i in range(num_groups):
+            start = i * group_size
+            end = min(start + group_size, self.height_23bit)
+            group_values = rgb_values_23[start:end, :]  # Shape: (group_size, 640)
+            # Vectorize the unique operation across columns
+            group_values_flat = group_values.reshape(-1)  # Shape: (group_size * 640,)
+            col_indices = np.repeat(np.arange(w), end - start)  # Shape: (group_size * 640,)
+            unique, indices, counts = np.unique(
+                group_values_flat,
+                return_inverse=True,
+                return_counts=True
+            )
+            # Find the most common value per column
+            max_counts = np.zeros(w, dtype=np.int32)
+            most_common = np.zeros(w, dtype=np.uint32)
+            for j in range(len(unique)):
+                mask = (indices == j)
+                col_counts = np.bincount(col_indices[mask], minlength=w)
+                mask_better = col_counts > max_counts
+                max_counts[mask_better] = col_counts[mask_better]
+                most_common[mask_better] = unique[j]
+            patterns[i] = most_common
+
+        # Test each pattern with 23 offsets
+        best_patterns = np.zeros(w, dtype=np.uint32)
+        best_offsets = np.zeros(w, dtype=np.uint8)
+        max_matches = np.zeros(w, dtype=np.int32)
+        for offset in range(23):
+            matches = self.count_matching_bits_23(rgb_values_23, patterns, offset)  # Shape: (21, 640)
+            for i in range(num_groups):
+                mask = matches[i] > max_matches
+                best_patterns[mask] = patterns[i][mask]
+                best_offsets[mask] = offset
+                max_matches[mask] = matches[i][mask]
+
+        # Apply the best patterns and offsets
+        base_frame_expanded = np.zeros((self.height_23bit, w, 3), dtype=np.uint8)
+        shifted_patterns = ((best_patterns << best_offsets) | (best_patterns >> (23 - best_offsets))) & 0x7FFFFF
+        r_pattern = ((shifted_patterns >> 15) & 0xFF) << 1
+        g_pattern = ((shifted_patterns >> 7) & 0xFF) << 1
+        b_pattern = (shifted_patterns << 1) & 0xFF
+        base_frame_expanded[:, :, 0] = r_pattern[np.newaxis, :]
+        base_frame_expanded[:, :, 1] = g_pattern[np.newaxis, :]
+        base_frame_expanded[:, :, 2] = b_pattern[np.newaxis, :]
+
+        # Trim the base frame back to 480 pixels
+        base_frame = base_frame_expanded[self.trim_indices_23bit, :, :]
+
+        # Step 3: Compute the difference frame
+        difference_frame = (frame.astype(np.int16) - base_frame.astype(np.int16)) % 256
+        difference_frame = difference_frame.astype(np.uint8)
+
+        # Step 4: Find the best 7-bit pattern for each channel
+        difference_expanded = np.zeros((self.height_7bit, w, 3), dtype=np.uint8)
+        difference_expanded[self.expand_indices_7bit, :, :] = difference_frame
+
+        encoded_frame_expanded = base_frame_expanded.copy()
+        for channel in range(3):
+            channel_values = difference_expanded[:, :, channel]  # Shape: (483, 640)
+            values_7 = (channel_values >> 1) & 0x7F  # Shape: (483, 640)
+
+            # Divide into 69 groups
+            group_size = 7
+            num_groups = 69
+            patterns = np.zeros((num_groups, w), dtype=np.uint8)
+            for i in range(num_groups):
+                start = i * group_size
+                end = min(start + group_size, self.height_7bit)
+                group_values = values_7[start:end, :]  # Shape: (group_size, 640)
+                group_values_flat = group_values.reshape(-1)
+                col_indices = np.repeat(np.arange(w), end - start)
+                unique, indices, counts = np.unique(
+                    group_values_flat,
+                    return_inverse=True,
+                    return_counts=True
+                )
+                max_counts = np.zeros(w, dtype=np.int32)
+                most_common = np.zeros(w, dtype=np.uint8)
+                for j in range(len(unique)):
+                    mask = (indices == j)
+                    col_counts = np.bincount(col_indices[mask], minlength=w)
+                    mask_better = col_counts > max_counts
+                    max_counts[mask_better] = col_counts[mask_better]
+                    most_common[mask_better] = unique[j]
+                patterns[i] = most_common
+
+            # Test each pattern with 7 offsets
+            best_patterns = np.zeros(w, dtype=np.uint8)
+            best_offsets = np.zeros(w, dtype=np.uint8)
+            max_matches = np.zeros(w, dtype=np.int32)
+            for offset in range(7):
+                matches = self.count_matching_bits_7(values_7, patterns, offset)  # Shape: (69, 640)
+                for i in range(num_groups):
+                    mask = matches[i] > max_matches
+                    best_patterns[mask] = patterns[i][mask]
+                    best_offsets[mask] = offset
+                    max_matches[mask] = matches[i][mask]
+
+            # Apply the best patterns
+            shifted_patterns = ((best_patterns << best_offsets) | (best_patterns >> (7 - best_offsets))) & 0x7F
+            pattern_values = (shifted_patterns << 1).astype(np.uint8)
+            # Scale down the 7-bit contribution to preserve the base pattern
+            scaled_pattern = (pattern_values // 4).astype(np.uint8)  # Reduce impact
+            encoded_frame_expanded[:, :, channel] = (encoded_frame_expanded[:, :, channel].astype(np.int16) + scaled_pattern[np.newaxis, :]) % 256
+
+        # Trim the encoded frame back to 480 pixels
+        encoded_frame = encoded_frame_expanded[self.trim_indices_7bit, :, :]
+
+        # Step 5: Create a 640-bit array for 4 groups of 20 8-bit colors
+        color_group_bits = np.zeros(w, dtype=np.uint8)
+        for col in range(w):
+            col_matches_1 = frame[:, col, :] & self.pattern_frame_1[:, col, :]
+            col_matches_0 = frame[:, col, :] & self.pattern_frame_0[:, col, :]
+            total_matches_1 = np.sum(col_matches_1)
+            total_matches_0 = np.sum(col_matches_0)
+            bit = 1 if total_matches_1 >= total_matches_0 else 0
+            col_matches_1_r = frame[:, col, 0] & self.pattern_frame_1[:, col, 0]
+            col_matches_0_r = frame[:, col, 0] & self.pattern_frame_0[:, col, 0]
+            total_matches_1_r = np.sum(col_matches_1_r)
+            total_matches_0_r = np.sum(col_matches_0_r)
+            bit_r = 1 if total_matches_1_r >= total_matches_0_r else 0
+            group = (bit << 1) | bit_r
+            color_group_bits[col] = group
+
+        # Store the color group bits for later use
+        self.color_group_bits = color_group_bits
+
+        # Return the final frame
+        return encoded_frame.astype(np.uint8)
+
     def transformer_incremental_encode(self, frame):
         h, w, _ = frame.shape
         blocks_vertical = h // self.block_size
