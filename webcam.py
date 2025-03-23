@@ -316,6 +316,8 @@ class VideoApp:
             "VBPatternVision": self.transformer_vertical_bitfield_pattern,
             "DiagonalVision": self.transformer_diagonal_vision,
             "VerticalVision": self.transformer_vertical_bitfield,
+            "Compressed Frame Prototype": self.transformer_compressed_frame_broken,
+            "Compressed Frame": self.transformer_compressed_frame,
             "Matrix Digital Rain": self.transformer_matrix,
             "Incremental Encode": self.transformer_incremental,
             "Vectorwave": self.transformer_vectorwave,
@@ -335,6 +337,7 @@ class VideoApp:
             "Mondrian": self.transformer_mondrian,
             "Mondrian 2": self.transformer_mondrian_2,
             "Complexity Test": self.transformer_complexity_test,
+            "Metrics": self.transformer_metrics,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -1501,6 +1504,218 @@ class VideoApp:
 
         # Return the final frame
         return encoded_frame.astype(np.uint8)
+    
+    def transformer_compressed_frame_broken(self, frame):
+        """
+        Compress a 640x480x24-bit frame to 1,234,944 bits (5:1 ratio).
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        
+        Returns:
+            compressed_frame: Reconstructed frame.
+            seed_map: 4-bit seed map (480, 640).
+            palette_r, palette_g, palette_b: 256-value palettes for each channel.
+        """
+        h, w, _ = frame.shape
+        assert h == 480 and w == 640, "Frame must be 640x480"
+
+        # Compute 4-bit seed map (simplified: average RGB mod 16)
+        # In practice, optimize this to reflect frame content
+        seed_map = np.mean(frame, axis=2).astype(np.uint8) % 16  # Shape: (480, 640)
+
+        # Define palettes (256 values each, 0-255 for simplicity)
+        # Could be optimized based on frame’s color distribution
+        palette_r = np.arange(256, dtype=np.uint8)
+        palette_g = np.arange(256, dtype=np.uint8)
+        palette_b = np.arange(256, dtype=np.uint8)
+
+        # Get row and column indices
+        rows, cols = np.indices((h, w), dtype=np.uint32)
+        seed_map = seed_map.astype(np.uint32)
+
+        # Compute palette indices for each channel
+        r_index = (seed_map * 640 + cols) % 256
+        g_index = (seed_map * 480 + rows) % 256
+        b_index = (seed_map * 307200 + rows * 640 + cols) % 256
+
+        # Map indices to palette values
+        compressed_frame = np.zeros_like(frame)
+        compressed_frame[:, :, 0] = palette_r[r_index]
+        compressed_frame[:, :, 1] = palette_g[g_index]
+        compressed_frame[:, :, 2] = palette_b[b_index]
+
+        # Compressed data: seed_map (1,228,800 bits) + palettes (6,144 bits)
+        return compressed_frame.astype # , seed_map, palette_r, palette_g, palette_b
+    
+    def transformer_compressed_frame(self, frame):
+        """
+        Compress and reconstruct a 640x480x24-bit frame using 5:1 compression.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        
+        Returns:
+            reconstructed_frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        """
+        compressed_data = self.encoder_compressed_frame(frame)
+        return self.decoder_compressed_frame(compressed_data)
+    
+    def encoder_compressed_frame(self, frame):
+        """
+        Encode a 640x480x24-bit frame into a 4-bit seed map and three 256-value palettes.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        
+        Returns:
+            tuple: (seed_map, palette_r, palette_g, palette_b)
+                - seed_map: 4-bit seed map (480, 640), values 0-15.
+                - palette_r, palette_g, palette_b: 256-value palettes for each channel (uint8).
+        """
+        h, w, _ = frame.shape
+        assert h == 480 and w == 640, "Frame must be 640x480"
+
+        # Compute 4-bit seed map (average RGB mod 16)
+        seed_map = np.mean(frame, axis=2).astype(np.uint8) % 16  # Shape: (480, 640)
+
+        # Compute palettes: most frequent 256 values per channel
+        def get_palette(channel_data):
+            hist, _ = np.histogram(channel_data.flatten(), bins=256, range=(0, 256))
+            indices = np.argsort(-hist)
+            palette = indices[:256].astype(np.uint8)
+            palette = np.sort(palette)
+            return palette
+
+        palette_r = get_palette(frame[:, :, 0])
+        palette_g = get_palette(frame[:, :, 1])
+        palette_b = get_palette(frame[:, :, 2])
+
+        return seed_map, palette_r, palette_g, palette_b
+    
+    def decoder_compressed_frame(self, compressed_data):
+        """
+        Decode a compressed frame from a 4-bit seed map and three 256-value palettes.
+        
+        Args:
+            compressed_data: tuple (seed_map, palette_r, palette_g, palette_b)
+                - seed_map: 4-bit seed map (480, 640), values 0-15, stored as uint8.
+                - palette_r, palette_g, palette_b: 256-value palettes for each channel (uint8).
+        
+        Returns:
+            reconstructed_frame: NumPy array of shape (480, 640, 3) with uint8 values.
+        """
+        seed_map, palette_r, palette_g, palette_b = compressed_data
+        h, w = seed_map.shape
+        assert h == 480 and w == 640, "Seed map must be 480x640"
+        assert len(palette_r) == 256 and len(palette_g) == 256 and len(palette_b) == 256, "Palettes must have 256 values"
+        assert seed_map.dtype == np.uint8, "Seed map must be uint8"
+        assert np.all(seed_map < 16), "Seed map values must be in range 0-15"
+
+        # Get row and column indices
+        rows, cols = np.indices((h, w), dtype=np.uint16)  # Use uint16 to save memory
+
+        # Compute odd/even masks for rows and columns
+        odd_rows = rows % 2
+        odd_cols = cols % 2
+
+        # Compute palette indices with adjusted formulas
+        r_index = (seed_map * 17 + rows * 3 + cols + odd_rows * 5 + odd_cols * 7) % 256
+        g_index = (seed_map * 23 + rows + cols * 3 + odd_cols * 11 + odd_rows * 13) % 256
+        b_index = (seed_map * 29 + (rows + cols) * 2 + (odd_rows ^ odd_cols) * 19) % 256
+
+        # Reconstruct the frame
+        reconstructed_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        reconstructed_frame[:, :, 0] = palette_r[r_index]
+        reconstructed_frame[:, :, 1] = palette_g[g_index]
+        reconstructed_frame[:, :, 2] = palette_b[b_index]
+
+        return reconstructed_frame
+    
+    def transformer_metrics(self, frame):
+        """
+        Analyze a frame and overlay metrics about unique values in the top-left corner using sets.
+        
+        Args:
+            frame: NumPy array of shape (h, w, 3) with uint8 values (RGB).
+        
+        Returns:
+            annotated_frame: NumPy array of shape (h, w, 3) with metrics overlaid.
+        """
+        # Ensure the frame is in the correct format
+        assert frame.dtype == np.uint8, "Frame must be uint8"
+        assert frame.shape[2] == 3, "Frame must have 3 channels (RGB)"
+        h, w, _ = frame.shape
+
+        # Compute unique 24-bit RGB values using a set
+        # Convert pixels to tuples for hashing
+        pixels = frame.reshape(-1, 3)
+        unique_rgb_set = set(map(tuple, pixels))
+        total_unique_rgb = len(unique_rgb_set)
+
+        # Compute unique 8-bit values for R, G, B individually using sets
+        r_values = frame[:, :, 0].flatten()
+        g_values = frame[:, :, 1].flatten()
+        b_values = frame[:, :, 2].flatten()
+        unique_r_set = set(r_values)
+        unique_g_set = set(g_values)
+        unique_b_set = set(b_values)
+        unique_r = len(unique_r_set)
+        unique_g = len(unique_g_set)
+        unique_b = len(unique_b_set)
+
+        # Compute total unique 8-bit values (R, G, B combined) using a set
+        # Use a single set for all values
+        unique_8bit_set = unique_r_set | unique_g_set | unique_b_set
+        total_unique_8bit = len(unique_8bit_set)
+
+        # Create a copy of the frame to annotate
+        annotated_frame = frame.copy()
+
+        # Define text properties
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        color = (255, 255, 255)  # White text
+        thickness = 1
+        line_spacing = 20
+        start_x, start_y = 10, 20  # Top-left corner
+
+        # Prepare the metrics text
+        metrics = [
+            f"Unique 24-bit RGB: {total_unique_rgb}",
+            f"Unique R: {unique_r}",
+            f"Unique G: {unique_g}",
+            f"Unique B: {unique_b}",
+            f"Unique 8-bit (all): {total_unique_8bit}"
+        ]
+
+        # Overlay each metric on the frame
+        for i, metric in enumerate(metrics):
+            y = start_y + i * line_spacing
+            # Add a black background for better readability
+            (text_w, text_h), _ = cv2.getTextSize(metric, font, font_scale, thickness)
+            cv2.rectangle(
+                annotated_frame,
+                (start_x, y - text_h - 2),
+                (start_x + text_w, y + 2),
+                (0, 0, 0),  # Black background
+                -1
+            )
+            # Add the text
+            cv2.putText(
+                annotated_frame,
+                metric,
+                (start_x, y),
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA
+            )
+
+        return annotated_frame
+    
+    
 
     def transformer_incremental_encode(self, frame):
         h, w, _ = frame.shape
