@@ -266,8 +266,8 @@ class VideoApp:
         self.block_size = 16  # Customize this based on desired granularity
         self.encoded_constraints = []
         self.decoding_buffer = None
-        self.frame_width = 640  # Your frame width
-        self.frame_height = 480  # Your frame height
+        self.frame_w = 640  # Your frame width
+        self.frame_h = 480  # Your frame height
         self.decoding_buffer = None  # State buffer for decoding
 
         # Frame queue for threaded camera reading
@@ -301,17 +301,26 @@ class VideoApp:
         self.mondrian_map = None
 
         # Diagonal, Vertical, and Horizontal Vision
-        self.width = 640
-        self.height = 480
+        # self.frame_width = 640
+        # self.frame_height = 480
         self.initialize_reference_patterns()
 
         # Vertical Bitfield Pattern Prototype
         # Vertical Bitfield Pattern
         self.initialize_vertical_bitfield_reference_patterns()
 
+        # Row / Column Persistent frame.
+        self.persistent_frame_col = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)  # Initialize to black
+        self.persistent_frame_col_current_row = 0  # Start at row 0
+
+        self.persistent_frame_row = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)  # Initialize to black
+        self.persistent_frame_row_current_row = 0  # Start at row 0
+
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Even/Odd": self.transformer_even_odd,
+            "RGB Even-Odd Strobe": self.transformer_rgb_even_odd_strobe,
             "VBPV Prototype": self.transformer_vertical_bitfield_pattern_prototype,
             "VBPatternVision": self.transformer_vertical_bitfield_pattern,
             "DiagonalVision": self.transformer_diagonal_vision,
@@ -380,6 +389,19 @@ class VideoApp:
         self.camera_index = self.camera_list[0][0] if self.camera_list else 0
         self.init_camera()
 
+        # RGB Evn/Odd Strobe attributes
+        self.rgb_strobe_cycle = 0
+        self.rgb_strobe_cycle_order = [
+            (0, True),  # R odd
+            (1, False), # G even
+            (2, True),  # B odd
+            (0, False), # R even
+            (1, True),  # G odd
+            (2, False)  # B even
+        ]
+        self.encode_rgb_even_odd = None
+        self.persistent_rgb_even_odd_strobe = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8) # Holds progressively refined frame
+
         # Start Update Loop
         self.update()
 
@@ -388,6 +410,10 @@ class VideoApp:
             self.cap.release()
 
         self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+
+        self.frame_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
         if not self.cap.isOpened():
             print(f"Error: Could not open camera at index {self.camera_index}.")
             self.cap = None
@@ -755,6 +781,235 @@ class VideoApp:
         output = cv2.addWeighted(frame, 1 - alpha, overlay, alpha, 0.0)
         
         return output
+    
+    def transformer_persistent_row(self, frame):
+        """
+        Update the persistent frame with a single row from the input frame.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            updated_frame: NumPy array of shape (480, 640, 3) with the updated persistent frame.
+        """
+        # Ensure the frame is the correct size
+        assert frame.shape == (self.frame_h, self.frame_w, 3), "Frame must be 480x640x3"
+        assert frame.dtype == np.uint8, "Frame must be uint8"
+
+        # Update the current row in the persistent frame
+        self.persistent_frame[self.current_row, :, :] = frame[self.current_row, :, :]
+
+        # Increment the row index (wrap around at 480)
+        self.current_row = (self.current_row + 1) % self.frame_h
+
+        # Return a copy of the updated frame
+        return self.persistent_frame.copy()
+
+    def get_update_data(self, frame):
+        """
+        Simulate the data sent for the current update.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (row_index, row_data)
+                - row_index: Integer (9 bits).
+                - row_data: Array of shape (640, 3) with uint8 values.
+        """
+        row_index = self.current_row
+        row_data = frame[row_index, :, :].copy()
+        return row_index, row_data
+
+    # def reset(self):
+    #     """
+    #     Reset the persistent frame and row index.
+    #     """
+    #     self.persistent_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+    #     self.current_row = 0
+
+    def transformer_peristent_col(self, frame):
+        """
+        Update the persistent frame with a single column from the input frame.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            updated_frame: NumPy array of shape (480, 640, 3) with the updated persistent frame.
+        """
+        # Ensure the frame is the correct size
+        assert frame.shape == (self.frame_h, self.frame_w, 3), "Frame must be 480x640x3"
+        assert frame.dtype == np.uint8, "Frame must be uint8"
+
+        # Update the current column in the persistent frame
+        self.persistent_frame_col[:, self.persistent_col_current_col, :] = frame[:, self.persistent_col_current_col, :]
+
+        # Create a copy for annotation
+        annotated_frame = self.persistent_frame_col.copy()
+
+        # Overlay metrics
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        color = (255, 255, 255)  # White text
+        thickness = 1
+        line_spacing = 20
+        start_x, start_y = 10, 20  # Top-left corner
+
+        metrics = [
+            f"Current Column: {self.persistent_frame_col_current_col}",
+            f"Data Sent: {11530} bits",
+            f"Compression Ratio: {7372800 / 11530:.1f}:1"
+        ]
+
+        for i, metric in enumerate(metrics):
+            y = start_y + i * line_spacing
+            (text_w, text_h), _ = cv2.getTextSize(metric, font, font_scale, thickness)
+            cv2.rectangle(
+                annotated_frame,
+                (start_x, y - text_h - 2),
+                (start_x + text_w, y + 2),
+                (0, 0, 0),  # Black background
+                -1
+            )
+            cv2.putText(
+                annotated_frame,
+                metric,
+                (start_x, y),
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA
+            )
+
+        # Increment the column index (wrap around at 640)
+        self.persistent_col_current_col = (self.persistent_col_current_col + 1) % self.frame_w
+
+        return annotated_frame
+    
+    def helper_persistent_col_update_data(self, frame):
+        """
+        Simulate the data sent for the current update.
+        
+        Args:
+            frame: NumPy array of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (col_index, col_data)
+                - col_index: Integer (10 bits).
+                - col_data: Array of shape (480, 3) with uint8 values.
+        """
+        col_index = self.persistent_frame_col_current_col
+        col_data = frame[:, col_index, :].copy()
+        return col_index, col_data
+    
+    # def reset(self):
+    #     """
+    #     Reset the persistent frame and column index.
+    #     """
+    #     self.persistent_frame_col = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+    #     self.persistent_frame_col_current_col = 0
+
+    def transformer_even_odd(self, frame, odd=True):
+        """
+        Converts pixel values to strictly even or strictly odd.
+        - odd=True  -> Converts even values to odd by adding 1.
+        - odd=False -> Converts odd values to even by subtracting 1.
+        """
+        if odd:
+            # Ensure all values are odd (except 255 remains unchanged)
+            transformed_frame = np.where((frame % 2 == 0) & (frame < 255), frame + 1, frame)
+        else:
+            # Ensure all values are even (except 0 remains unchanged)
+            transformed_frame = np.where((frame % 2 == 1) & (frame > 0), frame - 1, frame)
+        
+        return transformed_frame.astype(np.uint8)
+
+    def encode_even_odd(self, frame, odd=True):
+        """
+        Encodes the frame by applying the odd/even transformation.
+        Returns the transformed frame data.
+        """
+        return self.transformer_even_odd(frame, odd=odd)
+    
+    def decode_even_odd(self, frame, odd=True):
+        """
+        Attempts to reverse the transformation by guessing the original pixel values.
+        This is lossy since we only know whether the number was odd/even, not the original value.
+        """
+        if odd:
+            # Try to recover even values by subtracting 1 (except 255 remains unchanged)
+            decoded_frame = np.where((frame % 2 == 1) & (frame > 0), frame - 1, frame)
+        else:
+            # Try to recover odd values by adding 1 (except 0 remains unchanged)
+            decoded_frame = np.where((frame % 2 == 0) & (frame < 255), frame + 1, frame)
+
+        return decoded_frame.astype(np.uint8)
+    
+    def transformer_rgb_even_odd_strobe(self, frame):
+        """
+        Applies the strobing transformation:
+        1. Selects the next RGB channel and even/odd mode.
+        2. Encodes the frame with only the selected channel and parity.
+        3. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        # Step 1: Get next transmission cycle (numeric channel index and isOdd flag)
+        channel_idx, isOdd = self.get_next_strobe_params()
+
+        # Step 2: Encode the frame (apply even/odd filtering to the selected channel)
+        output_frame, channel_idx, isOdd = self.encode_rgb_even_odd_strobe(frame, channel_idx, isOdd)
+
+        # Step 3: Decode and return the progressively updated frame
+        return self.decode_rgb_even_odd_strobe(output_frame, channel_idx, isOdd)
+    
+    def encode_rgb_even_odd_strobe(self, frame, channel_idx, isOdd=True):
+        """
+        Extracts an RGB channel and keeps only even or odd values based on isOdd.
+        - rgbChannel: 'r', 'g', or 'b'
+        - isOdd: True (keeps odd values), False (keeps even values)
+        """
+        h, w, _ = frame.shape
+        
+        # Extract just the selected channel
+        channel_data = frame[:, :, channel_idx].copy()
+
+        # Apply even/odd filter via isOdd flag
+        channel_data = np.where((channel_data % 2 == isOdd), channel_data, 0)  # Keep odd values
+
+        # Create an output frame with only the selected channel
+        output_frame = np.zeros_like(frame)
+        output_frame[:, :, channel_idx] = channel_data  # Assign the processed channel
+        
+        return output_frame, channel_idx, isOdd
+    
+    def decode_rgb_even_odd_strobe(self, frame, channel_idx, isOdd):
+        """
+        Uses the incoming partial frame data to reconstruct the full frame progressively.
+        - frame: The current incoming encoded frame
+        - channel_idx: The channel index (0 = R, 1 = G, 2 = B)
+        - isOdd: Whether the data represents odd or even values
+        """
+        # Extract the transmitted channel data
+        new_data = frame[:, :, channel_idx]
+
+        # Update only the even or odd values in the persistent frame
+        mask = (new_data % 2 == isOdd)
+
+        # Apply updates only where the mask is True
+        self.persistent_rgb_even_odd_strobe[:, :, channel_idx] = np.where(
+            mask, new_data, self.persistent_rgb_even_odd_strobe[:, :, channel_idx]
+        )
+
+        return self.persistent_rgb_even_odd_strobe
+    
+    def get_next_strobe_params(self):
+        channel_idx, isOdd = self.cycle_order[self.rgb_strobe_cycle]
+        # print(f"Cycle {self.rgb_strobe_cycle}: Channel {channel_idx}, isOdd={isOdd}")
+        self.rgb_strobe_cycle = (self.rgb_strobe_cycle + 1) % 6
+        
+        return channel_idx, isOdd
+
     def transformer_mondrian_2(self, frame):
         h, w, _ = frame.shape
         output_frame = np.zeros((h, w, 3), dtype=np.uint8)
@@ -992,19 +1247,19 @@ class VideoApp:
     def initialize_reference_patterns(self):
         """Initialize two 640x480x3 frames with 10101010... and 01010101... patterns."""
         # Create a 480-length pattern for each
-        pattern_1 = np.array([1 if i % 2 == 0 else 0 for i in range(self.height)], dtype=np.uint8)  # 10101010...
-        pattern_0 = np.array([0 if i % 2 == 0 else 1 for i in range(self.height)], dtype=np.uint8)  # 01010101...
+        pattern_1 = np.array([1 if i % 2 == 0 else 0 for i in range(self.frame_h)], dtype=np.uint8)  # 10101010...
+        pattern_0 = np.array([0 if i % 2 == 0 else 1 for i in range(self.frame_h)], dtype=np.uint8)  # 01010101...
 
         # Convert patterns to 8-bit values (10101010 or 01010101)
         byte_1 = int('10101010', 2)  # 170
         byte_0 = int('01010101', 2)  # 85
 
         # Create 640x480x3 frames
-        self.pattern_frame_1 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        self.pattern_frame_0 = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        self.pattern_frame_1 = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+        self.pattern_frame_0 = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Fill each column with the repeating pattern
-        for col in range(self.width):
+        for col in range(self.frame_w):
             # For pattern_1 (10101010...), all channels get byte_1
             self.pattern_frame_1[:, col, :] = byte_1
             # For pattern_0 (01010101...), all channels get byte_0
@@ -1234,19 +1489,19 @@ class VideoApp:
         """Initialize transformations and pattern frames for vertical bitfield processing."""
         # 23-bit transformation: Expand from 480 to 483 pixels, trim back to 480
         self.height_23bit = 483  # 21 groups of 23 pixels
-        self.expand_indices_23bit = np.arange(self.height)
-        self.trim_indices_23bit = np.arange(self.height)  # First 480 pixels
+        self.expand_indices_23bit = np.arange(self.frame_h)
+        self.trim_indices_23bit = np.arange(self.frame_h)  # First 480 pixels
 
         # 7-bit transformation: Expand from 480 to 483 values, trim back to 480
         self.height_7bit = 483  # 69 groups of 7 pixels
-        self.expand_indices_7bit = np.arange(self.height)
-        self.trim_indices_7bit = np.arange(self.height)  # First 480 pixels
+        self.expand_indices_7bit = np.arange(self.frame_h)
+        self.trim_indices_7bit = np.arange(self.frame_h)  # First 480 pixels
 
         # Initialize pattern frames for color_group_bits
         byte_1 = int('10101010', 2)  # 170
         byte_0 = int('01010101', 2)  # 85
-        self.pattern_frame_1 = np.full((self.height, self.width, 3), byte_1, dtype=np.uint8)
-        self.pattern_frame_0 = np.full((self.height, self.width, 3), byte_0, dtype=np.uint8)
+        self.pattern_frame_1 = np.full((self.frame_h, self.frame_w, 3), byte_1, dtype=np.uint8)
+        self.pattern_frame_0 = np.full((self.frame_h, self.frame_w, 3), byte_0, dtype=np.uint8)
     
     def count_matching_bits_23(self, values, patterns, offset):
         """Count matching bits between 23-bit values and patterns with an offset."""
@@ -1927,7 +2182,7 @@ class VideoApp:
 
     # Decoder function (for incremental reconstruction from constraints):
     def decode_incremental(self, encoded_data):
-        h, w = self.frame_height, self.frame_width  # set these in __init__
+        h, w = self.frame_h, self.frame_w  # set these in __init__
         blocks_vertical = h // self.block_size
         blocks_horizontal = w // self.block_size
         num_blocks = blocks_vertical * blocks_horizontal
