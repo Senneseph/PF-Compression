@@ -482,7 +482,7 @@ class VideoApp:
             "VBPatternVision": self.transformer_vertical_bitfield_pattern,
             "DiagonalVision": self.transformer_diagonal_vision,
             "VerticalVision": self.transformer_vertical_bitfield,
-            "Compressed Frame Prototype": self.transformer_compressed_frame_broken,
+            "Compressed Frame Prototype": self.transformer_compressed_frame_prototype,
             "Compressed Frame": self.transformer_compressed_frame,
             "Matrix Digital Rain": self.transformer_matrix,
             "Incremental Encode": self.transformer_incremental,
@@ -2773,7 +2773,7 @@ class VideoApp:
         # Return the final frame
         return encoded_frame.astype(np.uint8)
     
-    def transformer_compressed_frame_broken(self, frame):
+    def transformer_compressed_frame_prototype(self, frame):
         """
         Compress a 640x480x24-bit frame to 1,234,944 bits (5:1 ratio).
         
@@ -2785,8 +2785,8 @@ class VideoApp:
             seed_map: 4-bit seed map (480, 640).
             palette_r, palette_g, palette_b: 256-value palettes for each channel.
         """
-        h, w, _ = frame.shape
-        assert h == 480 and w == 640, "Frame must be 640x480"
+        # h, w, _ = frame.shape
+        # assert h == 480 and w == 640, "Frame must be 640x480"
 
         # Compute 4-bit seed map (simplified: average RGB mod 16)
         # In practice, optimize this to reflect frame content
@@ -2799,7 +2799,7 @@ class VideoApp:
         palette_b = np.arange(256, dtype=np.uint8)
 
         # Get row and column indices
-        rows, cols = np.indices((h, w), dtype=np.uint32)
+        rows, cols = np.indices((self.frame_h, self.frame_w), dtype=np.uint32)
         seed_map = seed_map.astype(np.uint32)
 
         # Compute palette indices for each channel
@@ -2814,7 +2814,7 @@ class VideoApp:
         compressed_frame[:, :, 2] = palette_b[b_index]
 
         # Compressed data: seed_map (1,228,800 bits) + palettes (6,144 bits)
-        return compressed_frame.astype # , seed_map, palette_r, palette_g, palette_b
+        return compressed_frame.astype(np.uint8) # , seed_map, palette_r, palette_g, palette_b
     
     def transformer_compressed_frame(self, frame):
         """
