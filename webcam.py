@@ -1337,6 +1337,33 @@ class VideoApp:
         
         return combined_factorizations.tolist()
     
+    def encode_prime_factor_segments(self, frame, segment_size=32):
+        """
+        Encode a frame into prime factorizations for each segment.
+        
+        Args:
+            frame: NumPy array of shape (height, width, 3) with uint8 values.
+            segment_size: Size of each segment (default: 32).
+        
+        Returns:
+            combined_factorizations: Array of shape (3, height, segments_per_row) with factorization dicts.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        segments_per_row = width // segment_size
+        
+        # Reshape frame to (channels, height, segments_per_row, segment_size)
+        frame_reshaped = frame.reshape(height, segments_per_row, segment_size, 3).transpose(3, 0, 1, 2)
+        # Compute sums for all segments at once
+        segment_sums = frame_reshaped.sum(axis=3).astype(np.int32)  # Shape: (3, height, segments_per_row)
+        
+        # Vectorized lookup
+        flat_sums = segment_sums.flatten()  # Shape: (3 * height * segments_per_row,)
+        factorizations_flat = [self.factor_lookup[sum_val] for sum_val in flat_sums]
+        combined_factorizations = np.array(factorizations_flat, dtype=object).reshape(3, height, segments_per_row)
+        
+        return combined_factorizations
+    
     def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size):
         output = np.zeros((height, width, 3), dtype=np.uint8)
         segments_per_row = width // segment_size
@@ -1372,33 +1399,6 @@ class VideoApp:
                         output[row, start:start + remainder, channel] += 1
 
         return output
-    
-    def encode_prime_factor_segments(self, frame, segment_size=32):
-        """
-        Encode a frame into prime factorizations for each segment.
-        
-        Args:
-            frame: NumPy array of shape (height, width, 3) with uint8 values.
-            segment_size: Size of each segment (default: 32).
-        
-        Returns:
-            combined_factorizations: Array of shape (3, height, segments_per_row) with factorization dicts.
-        """
-        frame = frame.astype(np.uint8)
-        height, width, _ = frame.shape
-        segments_per_row = width // segment_size
-        
-        # Reshape frame to (channels, height, segments_per_row, segment_size)
-        frame_reshaped = frame.reshape(height, segments_per_row, segment_size, 3).transpose(3, 0, 1, 2)
-        # Compute sums for all segments at once
-        segment_sums = frame_reshaped.sum(axis=3).astype(np.int32)  # Shape: (3, height, segments_per_row)
-        
-        # Vectorized lookup
-        flat_sums = segment_sums.flatten()  # Shape: (3 * height * segments_per_row,)
-        factorizations_flat = [self.factor_lookup[sum_val] for sum_val in flat_sums]
-        combined_factorizations = np.array(factorizations_flat, dtype=object).reshape(3, height, segments_per_row)
-        
-        return combined_factorizations
     
     def encode_variable_exponent(self, exponent):
         """
@@ -1436,113 +1436,58 @@ class VideoApp:
         return signature, factors
 
     def transformer_prime_factor_signature(self, frame):
-        """
-        Encodes the frame using prime factor signatures, then decodes the result.
-        """
         frame = frame.astype(np.uint8)
-        height, width, _ = frame.shape
-        
-        # Encode the frame
-        runs = self.encode_prime_factor_signature(frame)
-        
-        # Decode and return the frame
-        return self.decode_prime_factor_signature(runs, height, width)
+        # height, width, _ = frame.shape
+        segment_size = 32
+        signatures = self.encode_prime_factor_signature(frame, segment_size)
+        output = self.decode_prime_factor_signature(signatures, self.frame_h, self.frame_w, segment_size)
 
-    def encode_prime_factor_signature(self, frame):
-        """
-        Encodes the frame by computing prime factor signatures for each pixel,
-        grouping pixels by signature, and combining factorizations within each group.
-        Returns: List of (signature, length, run_factors) for each run.
-        """
+        return output
+
+    def encode_prime_factor_signature(self, frame, segment_size=32):
         frame = frame.astype(np.uint8)
-        height, width, _ = frame.shape
-        
-        # Compute signatures and factorizations
-        signatures = np.zeros((height, width, 3), dtype=np.uint8)
-        factorizations = np.empty((height, width, 3), dtype=object)
-        
-        tasks = []
-        for row in range(height):
-            for col in range(width):
-                for channel in range(3):
-                    value = frame[row, col, channel]
-                    tasks.append((value, prime_index, row, col, channel))
-        
-        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            results = list(executor.map(lambda t: (self.factor_8bit(t[0], t[1]), t[2], t[3], t[4]), tasks))
-        
-        for (signature, factors), row, col, channel in results:
-            signatures[row, col, channel] = signature
-            factorizations[row, col, channel] = factors
-        
-        # Combine signatures into a single value
-        signature_values = signatures[:, :, 0] + 16 * signatures[:, :, 1] + 256 * signatures[:, :, 2]
-        
-        # Apply RLE to the signature values
-        signature_flat = signature_values.flatten()
-        runs = []
-        current_value = signature_flat[0]
-        current_length = 1
-        current_factors = [factorizations.flatten()[i] for i in range(3)]
-        
-        for i in range(1, len(signature_flat)):
-            value = signature_flat[i]
-            if value == current_value and current_length < height * width:
-                current_length += 1
-                current_factors.extend([factorizations.flatten()[j] for j in range(i*3, (i+1)*3)])
-            else:
-                # Combine factorizations for the run
-                combined_exponents = {}
-                for factors in current_factors:
-                    for prime, exponent in factors.items():
-                        if prime in self.prime_index:
-                            prime_idx = self.prime_index[prime]
-                            combined_exponents[prime_idx] = combined_exponents.get(prime_idx, 0) + exponent
-                
-                run_factors = []
-                for prime_idx, exponent in sorted(combined_exponents.items()):
-                    idx_bits = [int(b) for b in format(prime_idx, '08b')]
-                    exp_bits, _ = self.encode_variable_exponent(exponent)
-                    run_factors.append((idx_bits, exp_bits))
-                
-                runs.append((current_value, current_length, run_factors))
-                current_value = value
-                current_length = 1
-                current_factors = [factorizations.flatten()[j] for j in range(i*3, (i+1)*3)]
-        
-        runs.append((current_value, current_length, run_factors))
-        
-        return runs
+        # height, width, _ = frame.shape
+        segments_per_row = self.frame_w // segment_size
+        signatures = np.zeros((3, self.frame_h, segments_per_row), dtype=np.uint8)
+        max_possible_idx = len(self.prime_list) - 1
 
-    def decode_prime_factor_signature(self, runs, height, width):
-        """
-        Decodes the signature runs back into a frame.
-        """
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        pixel_idx = 0
-        
-        for signature, length, run_factors in runs:
-            # Reconstruct the values for this run
-            N = 1
-            for idx_bits, exp_bits in run_factors:
-                prime_idx = int(''.join(map(str, idx_bits)), 2)
-                prime = self.prime_list[prime_idx]
-                exponent, _ = self.decode_variable_exponent(exp_bits)
-                N *= prime ** exponent
-            
-            # Distribute N across the pixels in the run
-            for _ in range(length):
-                row = pixel_idx // width
-                col = pixel_idx % width
-                temp_N = N
-                for channel in range(2, -1, -1):
-                    byte = temp_N % 256
-                    frame[row, col, channel] = byte
-                    temp_N //= 256
-                pixel_idx += 1
-        
-        self.persistent_prime_factor = frame
-        return self.persistent_prime_factor
+        for channel in range(3):
+            channel_data = frame[:, :, channel]
+            reshaped = channel_data.reshape(self.frame_h, segments_per_row, segment_size)
+            segment_sums = reshaped.sum(axis=2)
+            factorizations = np.empty((self.frame_h, segments_per_row), dtype=object)
+
+            for row in range(self.frame_h):
+                for seg_idx in range(segments_per_row):
+                    N = int(segment_sums[row, seg_idx])
+                    factorizations[row, seg_idx] = self.factor_lookup[N]
+
+            for row in range(self.frame_h):
+                for seg_idx in range(segments_per_row):
+                    factors = factorizations[row, seg_idx]
+
+                    signatures[channel, row, seg_idx] = max(factors.keys()) * 255 // max_possible_idx if factors else 0
+
+                    # if factors:
+                    #     max_prime_idx = max(factors.keys())
+                    #     signatures[channel, row, seg_idx] = (max_prime_idx * 255 // max_possible_idx)
+                    # else:
+                    #     signatures[channel, row, seg_idx] = 0
+
+        return signatures
+
+    def decode_prime_factor_signature(self, signatures, height, width, segment_size):
+        output = np.zeros((height, width, 3), dtype=np.uint8)
+        segments_per_row = width // segment_size
+
+        for channel in range(3):
+            for row in range(height):
+                for seg_idx in range(segments_per_row):
+                    start = seg_idx * segment_size
+                    end = start + segment_size
+                    output[row, start:end, channel] = signatures[channel, row, seg_idx]
+
+        return output
 
     # def encode_prime_factor_row(self, frame):
     #     """
