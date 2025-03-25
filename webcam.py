@@ -966,10 +966,11 @@ class VideoApp:
     def encode_rgb_even_odd_strobe(self, frame, channel_idx, isOdd=True):
         """
         Extracts an RGB channel and keeps only even or odd values based on isOdd.
-        - rgbChannel: 'r', 'g', or 'b'
+        - channel_idx: 0 (R), 1 (G), 2 (B)
         - isOdd: True (keeps odd values), False (keeps even values)
         """
-        h, w, _ = frame.shape
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
         
         # Extract just the selected channel
         channel_data = frame[:, :, channel_idx].copy()
@@ -978,7 +979,7 @@ class VideoApp:
         channel_data = np.where((channel_data % 2 == isOdd), channel_data, 0)  # Keep odd values
 
         # Create an output frame with only the selected channel
-        output_frame = np.zeros_like(frame)
+        output_frame = np.zeros_like(frame, dtype=np.uint8)
         output_frame[:, :, channel_idx] = channel_data  # Assign the processed channel
         
         return output_frame, channel_idx, isOdd
@@ -999,15 +1000,15 @@ class VideoApp:
         # Apply updates only where the mask is True
         self.persistent_rgb_even_odd_strobe[:, :, channel_idx] = np.where(
             mask, new_data, self.persistent_rgb_even_odd_strobe[:, :, channel_idx]
-        )
+        ).astype(np.uint8)
 
         return self.persistent_rgb_even_odd_strobe
     
     def get_next_strobe_params(self):
-        channel_idx, isOdd = self.cycle_order[self.rgb_strobe_cycle]
+        channel_idx, isOdd = self.rgb_strobe_cycle_order[self.rgb_strobe_cycle]
         # print(f"Cycle {self.rgb_strobe_cycle}: Channel {channel_idx}, isOdd={isOdd}")
         self.rgb_strobe_cycle = (self.rgb_strobe_cycle + 1) % 6
-        
+
         return channel_idx, isOdd
 
     def transformer_mondrian_2(self, frame):
