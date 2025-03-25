@@ -118,34 +118,46 @@ def generate_pythagorean_mappings():
     
     return np.array(mappings, dtype=np.uint8), triple_map
 
-def generate_pythagorean_triples():
-    """
-    Generates all Pythagorean triples with c <= 255, including all permutations.
-    Returns a list of triples (a, b, c).
-    """
-    triples = [(0, 0, 0)]  # Include the trivial triple
+def generate_pythagorean_triples(max_value):
+    triples = []
+
+    for a in range(1, max_value + 1):
+        for b in range(a, max_value + 1):
+            c = int((a**2 + b**2)**0.5)
+
+            if c <= max_value and a**2 + b**2 == c**2:
+                triples.append((a, b, c))
     
-    # Generate primitive triples using m, n
-    for m in range(2, 16):  # m <= sqrt(255) ~ 15.97
-        for n in range(1, m):
-            if (m + n) % 2 == 1 and np.gcd(m, n) == 1:  # m, n coprime, not both odd
-                a = m * m - n * n
-                b = 2 * m * n
-                c = m * m + n * n
-                if c > 255:
-                    continue
-                # Generate multiples
-                k = 1
-                while True:
-                    ka, kb, kc = k * a, k * b, k * c
-                    if kc > 255:
-                        break
-                    # Add all permutations of the triple
-                    for perm in itertools.permutations([ka, kb, kc]):
-                        triples.append(perm)
-                    k += 1
+    return triples
+
+# def generate_pythagorean_triples():
+#     """
+#     Generates all Pythagorean triples with c <= 255, including all permutations.
+#     Returns a list of triples (a, b, c).
+#     """
+#     triples = [(0, 0, 0)]  # Include the trivial triple
     
-    return np.array(triples, dtype=np.uint8)
+#     # Generate primitive triples using m, n
+#     for m in range(2, 16):  # m <= sqrt(255) ~ 15.97
+#         for n in range(1, m):
+#             if (m + n) % 2 == 1 and np.gcd(m, n) == 1:  # m, n coprime, not both odd
+#                 a = m * m - n * n
+#                 b = 2 * m * n
+#                 c = m * m + n * n
+#                 if c > 255:
+#                     continue
+#                 # Generate multiples
+#                 k = 1
+#                 while True:
+#                     ka, kb, kc = k * a, k * b, k * c
+#                     if kc > 255:
+#                         break
+#                     # Add all permutations of the triple
+#                     for perm in itertools.permutations([ka, kb, kc]):
+#                         triples.append(perm)
+#                     k += 1
+    
+#     return np.array(triples, dtype=np.uint8)
 
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
@@ -583,6 +595,7 @@ class VideoApp:
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
         # Pythagorean Triple attributes
+        self.pythagorean_triples = generate_pythagorean_triples(255)
         self.pythagorean_triples_legend, self.pythagorean_triples_map = generate_pythagorean_mappings()
         self.pythagorean_triples_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
         # self.pythagorean_triples_set = generate_pythagorean_triples()
@@ -1604,71 +1617,37 @@ class VideoApp:
         
     #     return self.persistent_prime_factor
 
+    # transformer_pythagorean_triple
     def transformer_pythagorean_triple(self, frame):
-        """
-        Forces each pixel's RGB values to the nearest Pythagorean triple.
-        1. Encodes the frame into a mask and indices.
-        2. Decodes the indices into the persistent buffer.
-        """
-        frame = frame.astype(np.uint8)
-        
-        # Encode the frame
-        changed_mask, indices = self.encode_pythagorean_triple(frame)
-        
-        # Decode and return the progressively updated frame
-        return self.decode_pythagorean_triple(changed_mask, indices)
-    
-    def encode_pythagorean_triple(self, frame):
-        """
-        Encodes the frame by mapping each pixel to the nearest Pythagorean triple.
-        Returns:
-        - changed_mask: 1-bit mask indicating which pixels changed.
-        - indices: 10-bit indices for changed pixels (specifying the triple and permutation).
-        """
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        
-        # Compute the transformed frame (same as before)
-        pixels = frame.reshape(-1, 3)  # Shape: (height * width, 3)
-        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples_legend[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diffs ** 2, axis=2))  # Shape: (height * width, num_mappings)
-        nearest_indices = np.argmin(distances, axis=1)  # Shape: (height * width,)
-        transformed_frame = self.pythagorean_triples_legend[nearest_indices].reshape(height, width, 3)
-        
-        # Create a mask of changed pixels (compare with persistent frame)
-        changed_mask = np.any(frame != self.pythagorean_triples_persistent_frame, axis=2)  # Shape: (height, width)
-        
-        # Extract indices for changed pixels
-        indices_flat = nearest_indices.reshape(height, width)  # Shape: (height, width)
-        indices = indices_flat[changed_mask]  # Shape: (num_changed,)
-        
-        # Update the persistent frame (for the next frame's comparison)
-        self.pythagorean_triples_persistent_frame = transformed_frame
-        
-        return changed_mask, indices
 
-    def decode_pythagorean_triple(self, changed_mask, indices):
-        """
-        Decodes the frame by reconstructing RGB values from indices and updating the persistent buffer.
-        Args:
-        - changed_mask: 1-bit mask indicating which pixels changed.
-        - indices: 10-bit indices for changed pixels.
-        Returns:
-        - Updated persistent frame.
-        """
-        # Reconstruct the transformed frame
-        transformed_frame = self.pythagorean_triples_persistent_frame.copy()
-        
-        # Map indices back to RGB values
-        changed_pixels = self.pythagorean_triples_legend[indices]  # Shape: (num_changed, 3)
-        
-        # Update the transformed frame where pixels changed
-        transformed_frame[changed_mask] = changed_pixels
-        
-        # Update the persistent buffer
-        self.pythagorean_triples_persistent_frame = transformed_frame
-        
-        return self.pythagorean_triples_persistent_frame
+        # Downsample the frame to 240x320 for performance
+        small_frame = cv2.resize(frame, (width//2, height//2), interpolation=cv2.INTER_LINEAR)
+        small_height, small_width, _ = small_frame.shape
+
+        # Encode: Find closest Pythagorean triples for the downsampled frame
+        closest_triples = self.encode_pythagorean_triple(small_frame)
+
+        # Decode: Reshape and upscale back to original resolution
+        output = self.decode_pythagorean_triple(closest_triples, small_height, small_width, height, width)
+
+        return output
+    
+    def encode_pythagorean_triple(self, frame):
+        pixels = frame.reshape(-1, 3)
+        triples = np.array(self.pythagorean_triples, dtype=np.uint8)
+        diffs = np.abs(pixels[:, np.newaxis, :] - triples[np.newaxis, :, :])
+        distances = diffs.sum(axis=2)
+        closest_indices = np.argmin(distances, axis=1)
+        closest_triples = triples[closest_indices]
+        return closest_triples
+
+    def decode_pythagorean_triple(self, closest_triples, small_height, small_width, height, width):
+        small_output = closest_triples.reshape(small_height, small_width, 3)
+        output = cv2.resize(small_output, (width, height), interpolation=cv2.INTER_NEAREST)
+
+        return output
     
     def transformer_pythagorean_snap(self, frame):
         """
