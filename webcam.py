@@ -1,3 +1,5 @@
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
 import cv2
 import numpy as np
 from tkinter import Tk, Label, Button, OptionMenu, StringVar, Frame
@@ -10,7 +12,6 @@ import ffmpeg
 import random
 import subprocess
 from sympy import factorint, primerange
-import multiprocessing as mp
 
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
@@ -322,6 +323,7 @@ class VideoApp:
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
             "Prime Factor Row": self.transformer_prime_factor_row,
+            "Prime Factor Signature": self.transformer_prime_factor_signature,
             # "Pythagorean Triple": self.transformer_pythagorean_triple,
             # "Pythagorean Snap": self.transformer_pythagorean_snap,
             "Delta RGB Pix": self.transformer_delta_rgb_pix,
@@ -438,7 +440,9 @@ class VideoApp:
         self.prime_list = list(primerange(2, 1000))
         self.prime_index = {p: i for i, p in enumerate(self.prime_list)}
         self.persistent_prime_factor = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
-        self.num_workers = mp.cpu_count()  #
+        self.num_workers = mp.cpu_count()
+
+        print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
         # Start Update Loop
         self.update()
@@ -1116,6 +1120,24 @@ class VideoApp:
             exponent = int(''.join(map(str, remaining_bits)), 2)
             return exponent, 1 + len(remaining_bits)
         
+    def factor_segment(self, segment_data, segment_size, prime_index):
+        """
+        Factors a segment into its prime factorization.
+        Returns: Dictionary of {prime_idx: exponent}.
+        """
+        N = 0
+        for i, byte in enumerate(segment_data):
+            N += byte * (256 ** (segment_size - 1 - i))
+        
+        factors = factorint(N)
+        segment_factors = {}
+        for prime, exponent in factors.items():
+            if prime in prime_index:
+                prime_idx = prime_index[prime]
+                segment_factors[prime_idx] = exponent
+        
+        return segment_factors
+        
     def factor_row(self, row_data, width, prime_index):
         """
         Factors a single row of data into its prime factorization.
@@ -1148,83 +1170,271 @@ class VideoApp:
 
     def transformer_prime_factor_row(self, frame):
         """
-        Encodes each row of each channel as a big integer, factorizes it, and transmits the factorization.
-        Uses parallel processing to handle all rows and channels simultaneously.
+        Encodes each row of each channel by factoring segments, then decodes the result.
         """
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
+        segment_size = 16
+        
+        # Encode the frame
+        combined_factorizations = self.encode_prime_factor_row(frame, segment_size)
+        
+        # Decode and return the frame
+        return self.decode_prime_factor_row(combined_factorizations, height, width, segment_size)
+
+    # def transformer_prime_factor_row(self, frame):
+    #     """
+    #     Encodes each row of each channel as a big integer, factorizes it, and transmits the factorization.
+    #     Uses parallel processing to handle all rows and channels simultaneously.
+    #     """
+    #     frame = frame.astype(np.uint8)
+    #     height, width, _ = frame.shape
+        
+    #     # Prepare tasks for parallel processing
+    #     tasks = []
+    #     for channel in range(3):
+    #         for row in range(height):
+    #             row_data = frame[row, :, channel]
+    #             tasks.append((row_data, width, self.prime_index, channel, row))
+        
+    #     # Process all rows in parallel
+    #     with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+    #         results = list(executor.map(lambda t: (self.factor_row(t[0], t[1], t[2]), t[3], t[4]), tasks))
+        
+    #     # Organize results into factorizations[channel][row]
+    #     factorizations = [[[] for _ in range(height)] for _ in range(3)]
+    #     for row_factors, channel, row in results:
+    #         factorizations[channel][row] = row_factors
+        
+    #     # Decode and return the frame
+    #     return self.decode_prime_factor_row(factorizations, height, width)
+    
+    def encode_prime_factor_row(self, frame, segment_size=16):
+        """
+        Encodes each row of each channel by factoring segments and combining factorizations.
+        Args:
+        - frame: Input frame (height, width, 3).
+        - segment_size: Number of bytes per segment (default 16).
+        Returns:
+        - combined_factorizations: List of factorizations per channel and row.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        segments_per_row = width // segment_size  # 640 / 16 = 40
         
         # Prepare tasks for parallel processing
         tasks = []
         for channel in range(3):
             for row in range(height):
-                row_data = frame[row, :, channel]
-                tasks.append((row_data, width, self.prime_index, channel, row))
+                for seg in range(segments_per_row):
+                    start = seg * segment_size
+                    end = start + segment_size
+                    segment_data = frame[row, start:end, channel]
+                    tasks.append((segment_data, segment_size, self.prime_index, channel, row, seg))
         
-        # Process all rows in parallel
+        # Process all segments in parallel
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            results = list(executor.map(lambda t: (self.factor_row(t[0], t[1], t[2]), t[3], t[4]), tasks))
+            results = list(executor.map(lambda t: (self.factor_segment(t[0], t[1], t[2]), t[3], t[4], t[5]), tasks))
         
-        # Organize results into factorizations[channel][row]
-        factorizations = [[[] for _ in range(height)] for _ in range(3)]
-        for row_factors, channel, row in results:
-            factorizations[channel][row] = row_factors
+        # Combine factorizations for each row
+        factorizations = [[[{} for _ in range(segments_per_row)] for _ in range(height)] for _ in range(3)]
+        for segment_factors, channel, row, seg in results:
+            factorizations[channel][row][seg] = segment_factors
         
-        # Decode and return the frame
-        return self.decode_prime_factor_row(factorizations, height, width)
-
-    def encode_prime_factor_row(self, frame):
-        """
-        Encodes each row of each channel using prime factorization.
-        Returns a list of factorizations: [(prime_index, exponent), ...] for each row and channel.
-        """
-        height, width, _ = frame.shape
-        factorizations = []
-        
+        # Combine exponents for each row
+        combined_factorizations = [[[] for _ in range(height)] for _ in range(3)]
         for channel in range(3):
-            channel_factorizations = []
             for row in range(height):
-                # Extract the row for this channel
-                row_data = frame[row, :, channel]  # Shape: (width,)
+                # Combine exponents across all segments in the row
+                combined_exponents = {}
+                for seg in range(segments_per_row):
+                    segment_factors = factorizations[channel][row][seg]
+                    for prime_idx, exponent in segment_factors.items():
+                        combined_exponents[prime_idx] = combined_exponents.get(prime_idx, 0) + exponent
                 
-                # Convert to a big integer (base-256)
-                N = 0
-                for i, byte in enumerate(row_data):
-                    N += byte * (256 ** (width - 1 - i))
-                
-                # Compute the prime factorization
-                factors = factorint(N)
-                
-                # Encode the factorization
+                # Encode the combined factorization
                 row_factors = []
-                for prime, exponent in sorted(factors.items(), key=lambda x: x[0]):
-                    if prime not in self.prime_index:
-                        # Skip primes not in our list (should be rare for small numbers)
-                        continue
-                    prime_idx = self.prime_index[prime]
-                    # Encode the prime index (8 bits)
+                for prime_idx, exponent in sorted(combined_exponents.items()):
                     idx_bits = [int(b) for b in format(prime_idx, '08b')]
-                    # Encode the exponent (variable bits)
-                    exp_bits, exp_num_bits = self.encode_variable_exponent(exponent)
+                    exp_bits, _ = self.encode_variable_exponent(exponent)
                     row_factors.append((idx_bits, exp_bits))
                 
-                channel_factorizations.append(row_factors)
-            
-            factorizations.append(channel_factorizations)
+                combined_factorizations[channel][row] = row_factors
         
-        return factorizations
+        return combined_factorizations
+    
+    def factor_8bit(self, value, prime_index):
+        """
+        Factors an 8-bit number and returns its prime factor signature and factorization.
+        """
+        if value == 0:
+            return 0, {}
+        factors = factorint(value)
+        signature = sum(prime_index.get(prime, 0) for prime in factors.keys()) % 16
+        return signature, factors
 
-    def decode_prime_factor_row(self, factorizations, height, width):
+    def transformer_prime_factor_signature(self, frame):
+        """
+        Encodes the frame using prime factor signatures, then decodes the result.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        
+        # Encode the frame
+        runs = self.encode_prime_factor_signature(frame)
+        
+        # Decode and return the frame
+        return self.decode_prime_factor_signature(runs, height, width)
+
+    def encode_prime_factor_signature(self, frame):
+        """
+        Encodes the frame by computing prime factor signatures for each pixel,
+        grouping pixels by signature, and combining factorizations within each group.
+        Returns: List of (signature, length, run_factors) for each run.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        
+        # Compute signatures and factorizations
+        signatures = np.zeros((height, width, 3), dtype=np.uint8)
+        factorizations = np.empty((height, width, 3), dtype=object)
+        
+        tasks = []
+        for row in range(height):
+            for col in range(width):
+                for channel in range(3):
+                    value = frame[row, col, channel]
+                    tasks.append((value, self.prime_index, row, col, channel))
+        
+        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+            results = list(executor.map(lambda t: (self.factor_8bit(t[0], t[1]), t[2], t[3], t[4]), tasks))
+        
+        for (signature, factors), row, col, channel in results:
+            signatures[row, col, channel] = signature
+            factorizations[row, col, channel] = factors
+        
+        # Combine signatures into a single value
+        signature_values = signatures[:, :, 0] + 16 * signatures[:, :, 1] + 256 * signatures[:, :, 2]
+        
+        # Apply RLE to the signature values
+        signature_flat = signature_values.flatten()
+        runs = []
+        current_value = signature_flat[0]
+        current_length = 1
+        current_factors = [factorizations.flatten()[i] for i in range(3)]
+        
+        for i in range(1, len(signature_flat)):
+            value = signature_flat[i]
+            if value == current_value and current_length < height * width:
+                current_length += 1
+                current_factors.extend([factorizations.flatten()[j] for j in range(i*3, (i+1)*3)])
+            else:
+                # Combine factorizations for the run
+                combined_exponents = {}
+                for factors in current_factors:
+                    for prime, exponent in factors.items():
+                        if prime in self.prime_index:
+                            prime_idx = self.prime_index[prime]
+                            combined_exponents[prime_idx] = combined_exponents.get(prime_idx, 0) + exponent
+                
+                run_factors = []
+                for prime_idx, exponent in sorted(combined_exponents.items()):
+                    idx_bits = [int(b) for b in format(prime_idx, '08b')]
+                    exp_bits, _ = self.encode_variable_exponent(exponent)
+                    run_factors.append((idx_bits, exp_bits))
+                
+                runs.append((current_value, current_length, run_factors))
+                current_value = value
+                current_length = 1
+                current_factors = [factorizations.flatten()[j] for j in range(i*3, (i+1)*3)]
+        
+        runs.append((current_value, current_length, run_factors))
+        
+        return runs
+
+    def decode_prime_factor_signature(self, runs, height, width):
+        """
+        Decodes the signature runs back into a frame.
+        """
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        pixel_idx = 0
+        
+        for signature, length, run_factors in runs:
+            # Reconstruct the values for this run
+            N = 1
+            for idx_bits, exp_bits in run_factors:
+                prime_idx = int(''.join(map(str, idx_bits)), 2)
+                prime = self.prime_list[prime_idx]
+                exponent, _ = self.decode_variable_exponent(exp_bits)
+                N *= prime ** exponent
+            
+            # Distribute N across the pixels in the run
+            for _ in range(length):
+                row = pixel_idx // width
+                col = pixel_idx % width
+                temp_N = N
+                for channel in range(2, -1, -1):
+                    byte = temp_N % 256
+                    frame[row, col, channel] = byte
+                    temp_N //= 256
+                pixel_idx += 1
+        
+        self.persistent_prime_factor = frame
+        return self.persistent_prime_factor
+
+    # def encode_prime_factor_row(self, frame):
+    #     """
+    #     Encodes each row of each channel using prime factorization.
+    #     Returns a list of factorizations: [(prime_index, exponent), ...] for each row and channel.
+    #     """
+    #     height, width, _ = frame.shape
+    #     factorizations = []
+        
+    #     for channel in range(3):
+    #         channel_factorizations = []
+    #         for row in range(height):
+    #             # Extract the row for this channel
+    #             row_data = frame[row, :, channel]  # Shape: (width,)
+                
+    #             # Convert to a big integer (base-256)
+    #             N = 0
+    #             for i, byte in enumerate(row_data):
+    #                 N += byte * (256 ** (width - 1 - i))
+                
+    #             # Compute the prime factorization
+    #             factors = factorint(N)
+                
+    #             # Encode the factorization
+    #             row_factors = []
+    #             for prime, exponent in sorted(factors.items(), key=lambda x: x[0]):
+    #                 if prime not in self.prime_index:
+    #                     # Skip primes not in our list (should be rare for small numbers)
+    #                     continue
+    #                 prime_idx = self.prime_index[prime]
+    #                 # Encode the prime index (8 bits)
+    #                 idx_bits = [int(b) for b in format(prime_idx, '08b')]
+    #                 # Encode the exponent (variable bits)
+    #                 exp_bits, exp_num_bits = self.encode_variable_exponent(exponent)
+    #                 row_factors.append((idx_bits, exp_bits))
+                
+    #             channel_factorizations.append(row_factors)
+            
+    #         factorizations.append(channel_factorizations)
+        
+    #     return factorizations
+
+    def decode_prime_factor_row(self, factorizations, height, width, segment_size=16):
         """
         Decodes the factorizations back into a frame.
         """
         frame = np.zeros((height, width, 3), dtype=np.uint8)
+        segments_per_row = width // segment_size
         
         for channel in range(3):
             for row in range(height):
                 row_factors = factorizations[channel][row]
                 
-                # Reconstruct the big integer
+                # Reconstruct the big integer for the entire row
                 N = 1
                 for idx_bits, exp_bits in row_factors:
                     prime_idx = int(''.join(map(str, idx_bits)), 2)
@@ -1247,6 +1457,40 @@ class VideoApp:
         
         self.persistent_prime_factor = frame
         return self.persistent_prime_factor
+
+    # def decode_prime_factor_row(self, factorizations, height, width):
+    #     """
+    #     Decodes the factorizations back into a frame.
+    #     """
+    #     frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+    #     for channel in range(3):
+    #         for row in range(height):
+    #             row_factors = factorizations[channel][row]
+                
+    #             # Reconstruct the big integer
+    #             N = 1
+    #             for idx_bits, exp_bits in row_factors:
+    #                 prime_idx = int(''.join(map(str, idx_bits)), 2)
+    #                 prime = self.prime_list[prime_idx]
+    #                 exponent, _ = self.decode_variable_exponent(exp_bits)
+    #                 N *= prime ** exponent
+                
+    #             # Convert the big integer back to bytes
+    #             row_data = []
+    #             temp_N = N
+    #             for i in range(width):
+    #                 byte = temp_N % 256
+    #                 row_data.append(byte)
+    #                 temp_N //= 256
+    #             row_data = row_data[::-1]
+                
+    #             if len(row_data) < width:
+    #                 row_data = [0] * (width - len(row_data)) + row_data
+    #             frame[row, :, channel] = row_data
+        
+    #     self.persistent_prime_factor = frame
+    #     return self.persistent_prime_factor
 
     # def decode_prime_factor_row(self, factorizations, height, width):
     #     """
