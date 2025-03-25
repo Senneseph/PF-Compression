@@ -9,6 +9,8 @@ from queue import Queue, Empty  # Ensure Queue and Empty are imported
 import ffmpeg
 import random
 import subprocess
+from sympy import factorint, primerange
+import multiprocessing as mp
 
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
@@ -319,6 +321,10 @@ class VideoApp:
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Prime Factor Row": self.transformer_prime_factor_row,
+            # "Pythagorean Triple": self.transformer_pythagorean_triple,
+            # "Pythagorean Snap": self.transformer_pythagorean_snap,
+            "Delta RGB Pix": self.transformer_delta_rgb_pix,
             "Even/Odd Color": self.transformer_even_odd_color,
             "Even/Odd Spatial": self.transformer_even_odd_spatial,
             "RGB Strobe": self.transformer_rgb_strobe,
@@ -424,6 +430,15 @@ class VideoApp:
         # Even/Odd Spatial attributes
         self.even_odd_spatial_cycle = 0
         self.even_odd_spatial_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # Delta RGB Pix attributes
+        self.delta_rgb_pix_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # Prime Factor Row attributes
+        self.prime_list = list(primerange(2, 1000))
+        self.prime_index = {p: i for i, p in enumerate(self.prime_list)}
+        self.persistent_prime_factor = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+        self.num_workers = mp.cpu_count()  #
 
         # Start Update Loop
         self.update()
@@ -933,6 +948,345 @@ class VideoApp:
     #     """
     #     self.persistent_frame_col = np.zeros((self.height, self.width, 3), dtype=np.uint8)
     #     self.persistent_frame_col_current_col = 0
+
+    def transformer_delta_rgb_pix(self, frame):
+        """
+        Transforms the frame by transmitting only the delta of changed RGB values.
+        1. Encodes the frame into a mask and new values.
+        2. Decodes the mask and new values into the persistent frame.
+        """
+        # Encode the frame
+        mask, new_values = self.encode_delta_rgb_pix(frame)
+
+        mask, new_values = self.denoise_delta_rgb_pix(
+            mask, new_values, frame, self.delta_rgb_pix_persistent_frame, threshold=15
+        )
+
+        # Decode and return the updated frame
+        return self.decode_delta_rgb_pix(mask, new_values)
+    
+    def encode_delta_rgb_pix(self, frame):
+        """
+        Encodes the frame by identifying changed RGB values compared to the persistent frame.
+        Returns:
+        - mask: 2D array of 3-bit values (0-7) indicating which channels changed.
+        - new_values: 3D array of new RGB values for the changed channels.
+        """
+        frame = frame.astype(np.uint8)
+        
+        # Compare the current frame with the persistent frame
+        changed = frame != self.delta_rgb_pix_persistent_frame  # Shape: (height, width, 3), dtype: bool
+        
+        # Create the 3-bit mask
+        # Bit 2 (4): R changed, Bit 1 (2): G changed, Bit 0 (1): B changed
+        mask = (changed[:, :, 0].astype(np.uint8) * 4 +  # R channel
+                changed[:, :, 1].astype(np.uint8) * 2 +  # G channel
+                changed[:, :, 2].astype(np.uint8) * 1)   # B channel
+        # Shape: (height, width), dtype: uint8, values 0-7
+        
+        # Create the new values array (only for changed channels)
+        new_values = frame.copy()  # Shape: (height, width, 3), dtype: uint8
+        # For channels that didn't change, the value doesn't matter (mask will ignore them)
+        
+        return mask, new_values
+    
+    def decode_delta_rgb_pix(self, mask, new_values):
+        """
+        Decodes the frame by applying the changed RGB values to the persistent frame.
+        Overlays statistics on the frame about the number of pixels and channels updated.
+        Args:
+        - mask: 2D array of 3-bit values (0-7) indicating which channels changed.
+        - new_values: 3D array of new RGB values for the changed channels.
+        Returns:
+        - Updated persistent frame with statistics overlaid as text.
+        """
+        # Extract channel-specific masks
+        r_changed = (mask & 4) > 0  # Bit 2: R channel changed
+        g_changed = (mask & 2) > 0  # Bit 1: G channel changed
+        b_changed = (mask & 1) > 0  # Bit 0: B channel changed
+        # Each is shape: (height, width), dtype: bool
+        
+        # Update the persistent frame
+        updated_frame = self.delta_rgb_pix_persistent_frame.copy()
+        updated_frame[:, :, 0] = np.where(r_changed, new_values[:, :, 0], updated_frame[:, :, 0])
+        updated_frame[:, :, 1] = np.where(g_changed, new_values[:, :, 1], updated_frame[:, :, 1])
+        updated_frame[:, :, 2] = np.where(b_changed, new_values[:, :, 2], updated_frame[:, :, 2])
+        
+        # Update the persistent frame
+        self.delta_rgb_pix_persistent_frame = updated_frame.astype(np.uint8)
+        
+        # Compute statistics
+        total_pixels_updated = np.sum(mask > 0)
+        total_r_updated = np.sum(r_changed)
+        total_g_updated = np.sum(g_changed)
+        total_b_updated = np.sum(b_changed)
+        
+        # Prepare the frame for text overlay (ensure it's a copy so we don't modify the persistent frame)
+        frame_with_text = self.delta_rgb_pix_persistent_frame.copy()
+        
+        # Define text properties
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        font_color = (255, 255, 255)  # White text
+        thickness = 1
+        line_type = cv2.LINE_AA
+        
+        # Define starting position (top-left corner)
+        text_pos_x = 10
+        text_pos_y = 20
+        line_spacing = 20  # Pixels between lines
+        
+        # Define the statistics text
+        stats_text = [
+            f"Total Pixels: {total_pixels_updated}",
+            f"R: {total_r_updated}",
+            f"G: {total_g_updated}",
+            f"B: {total_b_updated}"
+        ]
+        
+        # Add each line of text to the frame
+        for i, line in enumerate(stats_text):
+            pos = (text_pos_x, text_pos_y + i * line_spacing)
+            # Add black outline for readability
+            cv2.putText(frame_with_text, line, pos, font, font_scale, (0, 0, 0), thickness + 1, line_type)
+            # Add white text on top
+            cv2.putText(frame_with_text, line, pos, font, font_scale, font_color, thickness, line_type)
+        
+        return frame_with_text
+    
+    def denoise_delta_rgb_pix(self, mask, new_values, frame, persistent_frame, threshold=1):
+        """
+        Denoises the output of encode_delta_rgb_pix by excluding RGB changes below a threshold.
+        Args:
+        - mask: 2D array of 3-bit values (0-7) indicating which channels changed.
+        - new_values: 3D array of new RGB values for the changed channels.
+        - frame: The original input frame.
+        - persistent_frame: The persistent frame to compare against.
+        - threshold: The maximum allowed difference to consider a change as noise (default: 1).
+        Returns:
+        - Updated mask with small changes excluded.
+        - Original new_values (unchanged).
+        """
+        # Compute the absolute difference between the frame and persistent frame
+        diff = np.abs(frame.astype(np.int16) - persistent_frame.astype(np.int16))
+        # Shape: (height, width, 3), dtype: int16
+        
+        # Identify channels where the difference is <= threshold (noise)
+        is_noise = diff <= threshold  # Shape: (height, width, 3), dtype: bool
+        
+        # Extract the current channel-specific changes from the mask
+        r_changed = (mask & 4) > 0  # Bit 2: R channel
+        g_changed = (mask & 2) > 0  # Bit 1: G channel
+        b_changed = (mask & 1) > 0  # Bit 0: B channel
+        
+        # Clear the bits for channels where the change is considered noise
+        r_changed = r_changed & ~is_noise[:, :, 0]
+        g_changed = g_changed & ~is_noise[:, :, 1]
+        b_changed = b_changed & ~is_noise[:, :, 2]
+        
+        # Recompute the mask with the filtered changes
+        updated_mask = (r_changed.astype(np.uint8) * 4 +
+                        g_changed.astype(np.uint8) * 2 +
+                        b_changed.astype(np.uint8) * 1)
+        
+        return updated_mask, new_values
+    
+    def encode_variable_exponent(self, exponent):
+        """
+        Encodes an exponent using variable-bit encoding.
+        - 1 bit: 0 if exponent is 1, 1 if >1.
+        - If >1, additional bits to encode the exponent.
+        Returns: (encoded_bits, num_bits)
+        """
+        if exponent == 1:
+            return [0], 1
+        else:
+            bits = bin(exponent)[2:]
+            return [1] + [int(b) for b in bits], 1 + len(bits)
+
+    def decode_variable_exponent(self, bits):
+        """
+        Decodes a variable-bit exponent.
+        Returns: (exponent, num_bits_consumed)
+        """
+        if bits[0] == 0:
+            return 1, 1
+        else:
+            remaining_bits = bits[1:]
+            exponent = int(''.join(map(str, remaining_bits)), 2)
+            return exponent, 1 + len(remaining_bits)
+        
+    def factor_row(self, row_data, width, prime_index):
+        """
+        Factors a single row of data into its prime factorization.
+        Args:
+        - row_data: 1D array of bytes (e.g., 640 values for a row).
+        - width: Number of pixels in the row.
+        - prime_index: Dictionary mapping primes to their indices.
+        Returns:
+        - List of (prime_idx_bits, exp_bits) for the row.
+        """
+        # Convert to a big integer (base-256)
+        N = 0
+        for i, byte in enumerate(row_data):
+            N += byte * (256 ** (width - 1 - i))
+        
+        # Compute the prime factorization
+        factors = factorint(N)
+        
+        # Encode the factorization
+        row_factors = []
+        for prime, exponent in sorted(factors.items(), key=lambda x: x[0]):
+            if prime not in prime_index:
+                continue
+            prime_idx = prime_index[prime]
+            idx_bits = [int(b) for b in format(prime_idx, '08b')]
+            exp_bits, _ = self.encode_variable_exponent(exponent)
+            row_factors.append((idx_bits, exp_bits))
+        
+        return row_factors
+
+    def transformer_prime_factor_row(self, frame):
+        """
+        Encodes each row of each channel as a big integer, factorizes it, and transmits the factorization.
+        Uses parallel processing to handle all rows and channels simultaneously.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        
+        # Prepare tasks for parallel processing
+        tasks = []
+        for channel in range(3):
+            for row in range(height):
+                row_data = frame[row, :, channel]
+                tasks.append((row_data, width, self.prime_index, channel, row))
+        
+        # Process all rows in parallel
+        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+            results = list(executor.map(lambda t: (self.factor_row(t[0], t[1], t[2]), t[3], t[4]), tasks))
+        
+        # Organize results into factorizations[channel][row]
+        factorizations = [[[] for _ in range(height)] for _ in range(3)]
+        for row_factors, channel, row in results:
+            factorizations[channel][row] = row_factors
+        
+        # Decode and return the frame
+        return self.decode_prime_factor_row(factorizations, height, width)
+
+    def encode_prime_factor_row(self, frame):
+        """
+        Encodes each row of each channel using prime factorization.
+        Returns a list of factorizations: [(prime_index, exponent), ...] for each row and channel.
+        """
+        height, width, _ = frame.shape
+        factorizations = []
+        
+        for channel in range(3):
+            channel_factorizations = []
+            for row in range(height):
+                # Extract the row for this channel
+                row_data = frame[row, :, channel]  # Shape: (width,)
+                
+                # Convert to a big integer (base-256)
+                N = 0
+                for i, byte in enumerate(row_data):
+                    N += byte * (256 ** (width - 1 - i))
+                
+                # Compute the prime factorization
+                factors = factorint(N)
+                
+                # Encode the factorization
+                row_factors = []
+                for prime, exponent in sorted(factors.items(), key=lambda x: x[0]):
+                    if prime not in self.prime_index:
+                        # Skip primes not in our list (should be rare for small numbers)
+                        continue
+                    prime_idx = self.prime_index[prime]
+                    # Encode the prime index (8 bits)
+                    idx_bits = [int(b) for b in format(prime_idx, '08b')]
+                    # Encode the exponent (variable bits)
+                    exp_bits, exp_num_bits = self.encode_variable_exponent(exponent)
+                    row_factors.append((idx_bits, exp_bits))
+                
+                channel_factorizations.append(row_factors)
+            
+            factorizations.append(channel_factorizations)
+        
+        return factorizations
+
+    def decode_prime_factor_row(self, factorizations, height, width):
+        """
+        Decodes the factorizations back into a frame.
+        """
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        for channel in range(3):
+            for row in range(height):
+                row_factors = factorizations[channel][row]
+                
+                # Reconstruct the big integer
+                N = 1
+                for idx_bits, exp_bits in row_factors:
+                    prime_idx = int(''.join(map(str, idx_bits)), 2)
+                    prime = self.prime_list[prime_idx]
+                    exponent, _ = self.decode_variable_exponent(exp_bits)
+                    N *= prime ** exponent
+                
+                # Convert the big integer back to bytes
+                row_data = []
+                temp_N = N
+                for i in range(width):
+                    byte = temp_N % 256
+                    row_data.append(byte)
+                    temp_N //= 256
+                row_data = row_data[::-1]
+                
+                if len(row_data) < width:
+                    row_data = [0] * (width - len(row_data)) + row_data
+                frame[row, :, channel] = row_data
+        
+        self.persistent_prime_factor = frame
+        return self.persistent_prime_factor
+
+    # def decode_prime_factor_row(self, factorizations, height, width):
+    #     """
+    #     Decodes the factorizations back into a frame.
+    #     """
+    #     frame = np.zeros((height, width, 3), dtype=np.uint8)
+        
+    #     for channel in range(3):
+    #         for row in range(height):
+    #             row_factors = factorizations[channel][row]
+                
+    #             # Reconstruct the big integer
+    #             N = 1
+    #             for idx_bits, exp_bits in row_factors:
+    #                 # Decode the prime index
+    #                 prime_idx = int(''.join(map(str, idx_bits)), 2)
+    #                 prime = self.prime_list[prime_idx]
+    #                 # Decode the exponent
+    #                 exponent, _ = self.decode_variable_exponent(exp_bits)
+    #                 # Multiply
+    #                 N *= prime ** exponent
+                
+    #             # Convert the big integer back to bytes
+    #             row_data = []
+    #             temp_N = N
+    #             for i in range(width):
+    #                 byte = temp_N % 256
+    #                 row_data.append(byte)
+    #                 temp_N //= 256
+    #             row_data = row_data[::-1]  # Reverse to match the encoding order
+                
+    #             # Ensure the row_data is the correct length
+    #             if len(row_data) < width:
+    #                 row_data = [0] * (width - len(row_data)) + row_data
+    #             frame[row, :, channel] = row_data
+        
+    #     # Update the persistent frame
+    #     self.persistent_prime_factor = frame
+        
+    #     return self.persistent_prime_factor
 
     def transformer_even_odd_color(self, frame):
         """
