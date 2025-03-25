@@ -321,6 +321,7 @@ class VideoApp:
             "Dummy": self.transformer_dummy,
             "Even/Odd": self.transformer_even_odd,
             "RGB Even-Odd Strobe": self.transformer_rgb_even_odd_strobe,
+            "RGB Matrix Strobe": self.transformer_rgb_matrix_strobe,
             "VBPV Prototype": self.transformer_vertical_bitfield_pattern_prototype,
             "VBPatternVision": self.transformer_vertical_bitfield_pattern,
             "DiagonalVision": self.transformer_diagonal_vision,
@@ -391,7 +392,7 @@ class VideoApp:
 
         # RGB Evn/Odd Strobe attributes
         self.rgb_strobe_cycle = 0
-        self.rgb_strobe_cycle_order = [
+        self.rgb_even_odd_strobe_cycle_order = [
             (0, True),  # R odd
             (1, False), # G even
             (2, True),  # B odd
@@ -401,6 +402,8 @@ class VideoApp:
         ]
         self.encode_rgb_even_odd = None
         self.persistent_rgb_even_odd_strobe = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8) # Holds progressively refined frame
+
+        self.persistent_rgb_matrix_strobe = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Start Update Loop
         self.update()
@@ -954,20 +957,24 @@ class VideoApp:
         2. Encodes the frame with only the selected channel and parity.
         3. Decodes the frame into the persistent buffer for progressive reconstruction.
         """
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
+
         # Step 1: Get next transmission cycle (numeric channel index and isOdd flag)
         channel_idx, isOdd = self.get_next_strobe_params()
 
         # Step 2: Encode the frame (apply even/odd filtering to the selected channel)
-        output_frame, channel_idx, isOdd = self.encode_rgb_even_odd_strobe(frame, channel_idx, isOdd)
+        output_frame, update_mask, channel_idx, isOdd = self.encode_rgb_even_odd_strobe(frame, channel_idx, isOdd)
 
         # Step 3: Decode and return the progressively updated frame
-        return self.decode_rgb_even_odd_strobe(output_frame, channel_idx, isOdd)
+        return self.decode_rgb_even_odd_strobe(output_frame, update_mask, channel_idx, isOdd)
     
     def encode_rgb_even_odd_strobe(self, frame, channel_idx, isOdd=True):
         """
         Extracts an RGB channel and keeps only even or odd values based on isOdd.
         - channel_idx: 0 (R), 1 (G), 2 (B)
         - isOdd: True (keeps odd values), False (keeps even values)
+        Returns: (output_frame, update_mask, channel_idx, isOdd)
         """
         # Ensure frame is uint8
         frame = frame.astype(np.uint8)
@@ -975,41 +982,112 @@ class VideoApp:
         # Extract just the selected channel
         channel_data = frame[:, :, channel_idx].copy()
 
-        # Apply even/odd filter via isOdd flag
-        channel_data = np.where((channel_data % 2 == isOdd), channel_data, 0)  # Keep odd values
+        # Compute the update mask based on parity
+        update_mask = (channel_data % 2 == isOdd)  # Shape: (height, width)
+
+        # Apply the update mask to keep only matching values
+        channel_data = np.where(update_mask, channel_data, 0)
 
         # Create an output frame with only the selected channel
         output_frame = np.zeros_like(frame, dtype=np.uint8)
-        output_frame[:, :, channel_idx] = channel_data  # Assign the processed channel
+        output_frame[:, :, channel_idx] = channel_data
         
-        return output_frame, channel_idx, isOdd
+        return output_frame, update_mask, channel_idx, isOdd
     
-    def decode_rgb_even_odd_strobe(self, frame, channel_idx, isOdd):
+    def decode_rgb_even_odd_strobe(self, encoded_frame, update_mask, channel_idx, isOdd):
         """
         Uses the incoming partial frame data to reconstruct the full frame progressively.
-        - frame: The current incoming encoded frame
+        - encoded_frame: The current incoming encoded frame
+        - update_mask: A boolean mask indicating which pixels to update
         - channel_idx: The channel index (0 = R, 1 = G, 2 = B)
         - isOdd: Whether the data represents odd or even values
         """
         # Extract the transmitted channel data
-        new_data = frame[:, :, channel_idx]
+        new_data = encoded_frame[:, :, channel_idx]
 
-        # Update only the even or odd values in the persistent frame
-        mask = (new_data % 2 == isOdd)
-
-        # Apply updates only where the mask is True
+        # Apply updates only where the update mask is True
         self.persistent_rgb_even_odd_strobe[:, :, channel_idx] = np.where(
-            mask, new_data, self.persistent_rgb_even_odd_strobe[:, :, channel_idx]
+            update_mask, new_data, self.persistent_rgb_even_odd_strobe[:, :, channel_idx]
         ).astype(np.uint8)
 
         return self.persistent_rgb_even_odd_strobe
     
     def get_next_strobe_params(self):
-        channel_idx, isOdd = self.rgb_strobe_cycle_order[self.rgb_strobe_cycle]
+        channel_idx, isOdd = self.rgb_even_odd_strobe_cycle_order[self.rgb_strobe_cycle]
         # print(f"Cycle {self.rgb_strobe_cycle}: Channel {channel_idx}, isOdd={isOdd}")
         self.rgb_strobe_cycle = (self.rgb_strobe_cycle + 1) % 6
 
         return channel_idx, isOdd
+    
+    def encode_rgb_matrix_strobe(self, frame, channel_idx, isOdd=True):
+        """
+        Extracts an RGB channel and keeps only even or odd pixels based on isOdd.
+        - channel_idx: 0 (R), 1 (G), 2 (B)
+        - isOdd: True (keeps odd pixels), False (keeps even pixels)
+        Returns: (output_frame, channel_idx, isOdd)
+        """
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
+        
+        # Extract just the selected channel
+        channel_data = frame[:, :, channel_idx].copy()
+
+        # Create a checkerboard mask for even/odd pixels
+        height, width = channel_data.shape
+        row_indices, col_indices = np.indices((height, width))
+        checkerboard = (row_indices + col_indices) % 2  # 0 for even, 1 for odd
+        update_mask = (checkerboard == (1 if isOdd else 0))  # True for pixels to update
+
+        # Apply the update mask to keep only the selected pixels
+        channel_data = np.where(update_mask, channel_data, 0)
+
+        # Create an output frame with only the selected channel
+        output_frame = np.zeros_like(frame, dtype=np.uint8)
+        output_frame[:, :, channel_idx] = channel_data
+        
+        return output_frame, channel_idx, isOdd
+
+    def decode_rgb_matrix_strobe(self, encoded_frame, channel_idx, isOdd):
+        """
+        Uses the incoming partial frame data to reconstruct the full frame progressively.
+        - encoded_frame: The current incoming encoded frame
+        - channel_idx: The channel index (0 = R, 1 = G, 2 = B)
+        - isOdd: Whether the data represents odd or even pixels
+        """
+        # Extract the transmitted channel data
+        new_data = encoded_frame[:, :, channel_idx]
+
+        # Create the same checkerboard mask as in the encoder
+        height, width = new_data.shape
+        row_indices, col_indices = np.indices((height, width))
+        checkerboard = (row_indices + col_indices) % 2
+        update_mask = (checkerboard == (1 if isOdd else 0))
+
+        # Apply updates only where the update mask is True
+        self.persistent_rgb_matrix_strobe[:, :, channel_idx] = np.where(
+            update_mask, new_data, self.persistent_rgb_matrix_strobe[:, :, channel_idx]
+        ).astype(np.uint8)
+
+        return self.persistent_rgb_matrix_strobe
+
+    def transformer_rgb_matrix_strobe(self, frame):
+        """
+        Applies the matrix strobing transformation:
+        1. Selects the next RGB channel and even/odd pixel mode.
+        2. Encodes the frame with only the selected channel and pixels.
+        3. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
+
+        # Step 1: Get next transmission cycle (numeric channel index and isOdd flag)
+        channel_idx, isOdd = self.get_next_strobe_params()
+
+        # Step 2: Encode the frame (apply even/odd pixel filtering to the selected channel)
+        output_frame, channel_idx, isOdd = self.encode_rgb_matrix_strobe(frame, channel_idx, isOdd)
+
+        # Step 3: Decode and return the progressively updated frame
+        return self.decode_rgb_matrix_strobe(output_frame, channel_idx, isOdd)
 
     def transformer_mondrian_2(self, frame):
         h, w, _ = frame.shape
