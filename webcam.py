@@ -15,18 +15,19 @@ from sympy import factorint, primerange
 import itertools
 
 def factor_segment(segment_data, segment_size, prime_index):
-    """
-    Factors the sum of a segment into its prime factorization.
-    Returns: Dictionary of {prime_idx: exponent}.
-    """
-    # Sum the pixel values in the segment
-    N = np.sum(segment_data)  # Values are 0–255, so max is 16 * 255 = 4080
-    factors = factorint(int(N))
+    N = 0
+
+    for i, byte in enumerate(segment_data):
+        N += byte * (256 ** (segment_size - 1 - i))
+
+    factors = factorint(N)
     segment_factors = {}
+
     for prime, exponent in factors.items():
         if prime in prime_index:
             prime_idx = prime_index[prime]
             segment_factors[prime_idx] = exponent
+
     return segment_factors
 
 def process_segment_task(task):
@@ -38,6 +39,7 @@ def process_segment_task(task):
         Tuple of (segment_factors, channel, row, seg_idx)
     """
     segment_data, segment_size, prime_index, channel, row, seg_idx = task
+
     return (factor_segment(segment_data, segment_size, prime_index), channel, row, seg_idx)
 
 def get_pythagorean_numbers():
@@ -67,6 +69,41 @@ def get_pythagorean_numbers():
                     k += 1
     
     return sorted(numbers)
+
+def generate_pythagorean_mappings():
+    """
+    Generates all Pythagorean triples with c <= 255, including all permutations.
+    Returns:
+    - mappings: Array of triples (a, b, c) with all permutations.
+    - triple_map: Dictionary mapping (a, b, c) to its index.
+    """
+    triples = [(0, 0, 0)]
+    for m in range(2, 16):
+        for n in range(1, m):
+            if (m + n) % 2 == 1 and np.gcd(m, n) == 1:
+                a = m * m - n * n
+                b = 2 * m * n
+                c = m * m + n * n
+                if c > 255:
+                    continue
+                k = 1
+                while True:
+                    ka, kb, kc = k * a, k * b, k * c
+                    if kc > 255:
+                        break
+                    triples.append((ka, kb, kc))
+                    k += 1
+    # Generate all permutations
+    mappings = []
+    triple_map = {}
+    index = 0
+    for triple in triples:
+        for perm in itertools.permutations(triple):
+            mappings.append(perm)
+            triple_map[perm] = index
+            index += 1
+    
+    return np.array(mappings, dtype=np.uint8), triple_map
 
 def generate_pythagorean_triples():
     """
@@ -529,8 +566,9 @@ class VideoApp:
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
         # Pythagorean Triple attributes
-        self.pythagorean_triples_set = generate_pythagorean_triples()
+        self.pythagorean_triples_legend, self.pythagorean_triples_map = generate_pythagorean_mappings()
         self.pythagorean_triples_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+        # self.pythagorean_triples_set = generate_pythagorean_triples()
 
         # Pythagorean Snap attributes
         self.pythagorean_snap_set = get_pythagorean_numbers()
@@ -1224,7 +1262,7 @@ class VideoApp:
         #         return frame  # Skip processing after one frame
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segment_size = 32
+        segment_size = 4
 
         # print("Encoding prime factor row")
         combined_factorizations = self.encode_prime_factor_row(frame, segment_size)
@@ -1264,21 +1302,12 @@ class VideoApp:
     #     # Decode and return the frame
     #     return self.decode_prime_factor_row(factorizations, height, width)
     
-    def encode_prime_factor_row(self, frame, segment_size=32):
-        """
-        Encodes each row of each channel by factoring the sum of pixel values in segments.
-        Args:
-            frame: Input frame (height, width, 3).
-            segment_size: Number of pixels per segment (default 32).
-        Returns:
-            combined_factorizations: List of factorizations per channel and row.
-        """
+    def encode_prime_factor_row(self, frame, segment_size=4):  # Reduced size for practicality
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segments_per_row = width // segment_size  # e.g., 640 / 32 = 20
-        
-        # Prepare tasks for parallel processing
+        segments_per_row = width // segment_size
         tasks = []
+
         for channel in range(3):
             for row in range(height):
                 for seg_idx in range(segments_per_row):
@@ -1286,49 +1315,41 @@ class VideoApp:
                     end = start + segment_size
                     segment_data = frame[row, start:end, channel]
                     tasks.append((segment_data, segment_size, self.prime_index, channel, row, seg_idx))
-        
-        # Process all segments in parallel
+
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
             results = list(executor.map(process_segment_task, tasks))
-        
-        # Organize results into combined_factorizations[channel][row][seg_idx]
-        combined_factorizations = [[[None] * segments_per_row for _ in range(height)] for _ in range(3)]
+
+        combined_factorizations = [[[None for _ in range(segments_per_row)] for _ in range(height)] for _ in range(3)]
+
         for segment_factors, channel, row, seg_idx in results:
             combined_factorizations[channel][row][seg_idx] = segment_factors
-        
+
         return combined_factorizations
     
-    def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size):
-        """
-        Decodes the factorizations back into a frame by using the largest prime factor.
-        Args:
-            combined_factorizations: List of factorizations per channel, row, and segment.
-            height, width: Frame dimensions.
-            segment_size: Number of pixels per segment.
-        Returns:
-            Reconstructed frame.
-        """
+    def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size=4):
         output = np.zeros((height, width, 3), dtype=np.uint8)
         segments_per_row = width // segment_size
-        
+
         for channel in range(3):
             for row in range(height):
                 for seg_idx in range(segments_per_row):
-                    factors = combined_factorizations[channel][row][seg_idx]
-                    if not factors:
-                        continue
-                    # Use the largest prime factor as the intensity
-                    if factors:
-                        largest_prime_idx = max(factors.keys(), default=0)
-                        largest_prime = self.prime_list[largest_prime_idx]
-                        intensity = min(largest_prime, 255)  # Cap at 255
-                    else:
-                        intensity = 0
-                    # Apply the intensity to the segment
                     start = seg_idx * segment_size
                     end = start + segment_size
-                    output[row, start:end, channel] = intensity
-        
+                    segment_factors = combined_factorizations[channel][row][seg_idx]
+                    N = 1
+
+                    for prime_idx, exponent in segment_factors.items():
+                        prime = self.prime_list[prime_idx]
+                        N *= prime ** exponent
+
+                    segment_data = np.zeros(segment_size, dtype=np.uint8)
+
+                    for i in range(segment_size - 1, -1, -1):
+                        segment_data[i] = N % 256
+                        N //= 256
+
+                    output[row, start:end, channel] = segment_data
+
         return output
     
     def encode_variable_exponent(self, exponent):
@@ -1593,59 +1614,66 @@ class VideoApp:
     def transformer_pythagorean_triple(self, frame):
         """
         Forces each pixel's RGB values to the nearest Pythagorean triple.
-        1. Encodes the frame by mapping to the nearest triple.
-        2. Decodes the frame into the persistent buffer for progressive reconstruction.
+        1. Encodes the frame into a mask and indices.
+        2. Decodes the indices into the persistent buffer.
         """
         frame = frame.astype(np.uint8)
         
         # Encode the frame
-        transformed, changed_mask = self.encode_pythagorean_triple(frame)
+        changed_mask, indices = self.encode_pythagorean_triple(frame)
         
         # Decode and return the progressively updated frame
-        return self.decode_pythagorean_triple(transformed, changed_mask)
+        return self.decode_pythagorean_triple(changed_mask, indices)
     
     def encode_pythagorean_triple(self, frame):
         """
         Encodes the frame by mapping each pixel to the nearest Pythagorean triple.
-        Returns the transformed frame and a mask of changed pixels.
+        Returns:
+        - changed_mask: 1-bit mask indicating which pixels changed.
+        - indices: 10-bit indices for changed pixels (specifying the triple and permutation).
         """
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        transformed_frame = np.zeros_like(frame, dtype=np.uint8)
-        changed_mask = np.zeros((height, width), dtype=np.bool)
         
-        # Flatten the frame for vectorized computation
+        # Compute the transformed frame (same as before)
         pixels = frame.reshape(-1, 3)  # Shape: (height * width, 3)
-        
-        # Compute distances to all triples for all pixels
-        # pixels: (height * width, 3)
-        # triples: (num_triples, 3)
-        # Broadcasting: (height * width, num_triples, 3)
-        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples_set[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diffs ** 2, axis=2))  # Shape: (height * width, num_triples)
-        
-        # Find the nearest triple for each pixel
+        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples_legend[np.newaxis, :, :]
+        distances = np.sqrt(np.sum(diffs ** 2, axis=2))  # Shape: (height * width, num_mappings)
         nearest_indices = np.argmin(distances, axis=1)  # Shape: (height * width,)
-        nearest_triples = self.pythagorean_triples_set[nearest_indices]  # Shape: (height * width, 3)
+        transformed_frame = self.pythagorean_triples_legend[nearest_indices].reshape(height, width, 3)
         
-        # Reshape back to image dimensions
-        transformed_frame = nearest_triples.reshape(height, width, 3)
+        # Create a mask of changed pixels (compare with persistent frame)
+        changed_mask = np.any(frame != self.pythagorean_triples_persistent_frame, axis=2)  # Shape: (height, width)
         
-        # Create a mask of changed pixels
-        changed_mask = np.any(frame != transformed_frame, axis=2)
+        # Extract indices for changed pixels
+        indices_flat = nearest_indices.reshape(height, width)  # Shape: (height, width)
+        indices = indices_flat[changed_mask]  # Shape: (num_changed,)
         
-        return transformed_frame, changed_mask
+        # Update the persistent frame (for the next frame's comparison)
+        self.pythagorean_triples_persistent_frame = transformed_frame
+        
+        return changed_mask, indices
 
-    def decode_pythagorean_triple(self, frame, changed_mask):
+    def decode_pythagorean_triple(self, changed_mask, indices):
         """
-        Updates the persistent buffer with the transformed frame where pixels changed.
+        Decodes the frame by reconstructing RGB values from indices and updating the persistent buffer.
+        Args:
+        - changed_mask: 1-bit mask indicating which pixels changed.
+        - indices: 10-bit indices for changed pixels.
+        Returns:
+        - Updated persistent frame.
         """
+        # Reconstruct the transformed frame
+        transformed_frame = self.pythagorean_triples_persistent_frame.copy()
+        
+        # Map indices back to RGB values
+        changed_pixels = self.pythagorean_triples_legend[indices]  # Shape: (num_changed, 3)
+        
+        # Update the transformed frame where pixels changed
+        transformed_frame[changed_mask] = changed_pixels
+        
         # Update the persistent buffer
-        self.pythagorean_triples_persistent_frame = np.where(
-            changed_mask[:, :, np.newaxis],
-            frame,
-            self.pythagorean_triples_persistent_frame
-        ).astype(np.uint8)
+        self.pythagorean_triples_persistent_frame = transformed_frame
         
         return self.pythagorean_triples_persistent_frame
     
