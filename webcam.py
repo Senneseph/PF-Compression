@@ -12,23 +12,21 @@ import ffmpeg
 import random
 import subprocess
 from sympy import factorint, primerange
+import itertools
 
 def factor_segment(segment_data, segment_size, prime_index):
     """
-    Factors a segment into its prime factorization.
+    Factors the sum of a segment into its prime factorization.
     Returns: Dictionary of {prime_idx: exponent}.
     """
-    N = 0
-    for i, byte in enumerate(segment_data):
-        N += byte * (256 ** (segment_size - 1 - i))
-    print(f"Segment N: {N}")
-    factors = factorint(N)
+    # Sum the pixel values in the segment
+    N = np.sum(segment_data)  # Values are 0–255, so max is 16 * 255 = 4080
+    factors = factorint(int(N))
     segment_factors = {}
     for prime, exponent in factors.items():
         if prime in prime_index:
             prime_idx = prime_index[prime]
             segment_factors[prime_idx] = exponent
-    print(f"Segment Factors: {segment_factors}")
     return segment_factors
 
 def process_segment_task(task):
@@ -41,6 +39,63 @@ def process_segment_task(task):
     """
     segment_data, segment_size, prime_index, channel, row, seg_idx = task
     return (factor_segment(segment_data, segment_size, prime_index), channel, row, seg_idx)
+
+def get_pythagorean_numbers():
+    """
+    Returns a sorted list of unique numbers that appear in Pythagorean triples with c <= 255.
+    """
+    numbers = set([0])  # Include 0 for the trivial triple (0, 0, 0)
+    
+    # Generate primitive triples
+    for m in range(2, 16):
+        for n in range(1, m):
+            if (m + n) % 2 == 1 and np.gcd(m, n) == 1:
+                a = m * m - n * n
+                b = 2 * m * n
+                c = m * m + n * n
+                if c > 255:
+                    continue
+                # Generate multiples
+                k = 1
+                while True:
+                    ka, kb, kc = k * a, k * b, k * c
+                    if kc > 255:
+                        break
+                    numbers.add(ka)
+                    numbers.add(kb)
+                    numbers.add(kc)
+                    k += 1
+    
+    return sorted(numbers)
+
+def _generate_pythagorean_triples(self):
+    """
+    Generates all Pythagorean triples with c <= 255, including all permutations.
+    Returns a list of triples (a, b, c).
+    """
+    triples = [(0, 0, 0)]  # Include the trivial triple
+    
+    # Generate primitive triples using m, n
+    for m in range(2, 16):  # m <= sqrt(255) ~ 15.97
+        for n in range(1, m):
+            if (m + n) % 2 == 1 and np.gcd(m, n) == 1:  # m, n coprime, not both odd
+                a = m * m - n * n
+                b = 2 * m * n
+                c = m * m + n * n
+                if c > 255:
+                    continue
+                # Generate multiples
+                k = 1
+                while True:
+                    ka, kb, kc = k * a, k * b, k * c
+                    if kc > 255:
+                        break
+                    # Add all permutations of the triple
+                    for perm in itertools.permutations([ka, kb, kc]):
+                        triples.append(perm)
+                    k += 1
+    
+    return np.array(triples, dtype=np.uint8)
 
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
@@ -353,8 +408,8 @@ class VideoApp:
             "Dummy": self.transformer_dummy,
             "Prime Factor Row": self.transformer_prime_factor_row,
             "Prime Factor Signature": self.transformer_prime_factor_signature,
-            # "Pythagorean Triple": self.transformer_pythagorean_triple,
-            # "Pythagorean Snap": self.transformer_pythagorean_snap,
+            "Pythagorean Triple": self.transformer_pythagorean_triple,
+            "Pythagorean Snap": self.transformer_pythagorean_snap,
             "Delta RGB Pix": self.transformer_delta_rgb_pix,
             "Even/Odd Color": self.transformer_even_odd_color,
             "Even/Odd Spatial": self.transformer_even_odd_spatial,
@@ -469,9 +524,17 @@ class VideoApp:
         self.prime_list = list(primerange(2, 1000))
         self.prime_index = {p: i for i, p in enumerate(self.prime_list)}
         self.persistent_prime_factor = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
-        self.num_workers = 4 # mp.cpu_count()
+        self.num_workers = mp.cpu_count()
 
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
+
+        # Pythagorean Triple attributes
+        self.pythagorean_triples = _generate_pythagorean_triples()
+        self.persistent_pythagorean = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # Pythagorean Snap attributes
+        self.pythagorean_numbers = get_pythagorean_numbers()
+        self.persistent_pythagorean_snap = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Start Update Loop
         self.update()
@@ -1155,22 +1218,22 @@ class VideoApp:
         return row_factors
 
     def transformer_prime_factor_row(self, frame):
-        print("Encoding prime factor row")
-        if hasattr(self, 'processed_one_frame') and self.processed_one_frame:
-                print("Skipping processing after one frame")
-                return frame  # Skip processing after one frame
+        # print("Encoding prime factor row")
+        # if hasattr(self, 'processed_one_frame') and self.processed_one_frame:
+        #         print("Skipping processing after one frame")
+        #         return frame  # Skip processing after one frame
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segment_size = 16
+        segment_size = 32
 
-        print("Encoding prime factor row")
+        # print("Encoding prime factor row")
         combined_factorizations = self.encode_prime_factor_row(frame, segment_size)
 
-        print("Decoding prime factor row")
+        # print("Decoding prime factor row")
         decoded_frame = self.decode_prime_factor_row(combined_factorizations, height, width, segment_size)
 
-        print("Finished processing frame")
-        self.processed_one_frame = True
+        # print("Finished processing frame")
+        # self.processed_one_frame = True
 
         return decoded_frame
 
@@ -1201,18 +1264,18 @@ class VideoApp:
     #     # Decode and return the frame
     #     return self.decode_prime_factor_row(factorizations, height, width)
     
-    def encode_prime_factor_row(self, frame, segment_size=16):
+    def encode_prime_factor_row(self, frame, segment_size=32):
         """
-        Encodes each row of each channel by factoring segments and combining factorizations.
+        Encodes each row of each channel by factoring the sum of pixel values in segments.
         Args:
             frame: Input frame (height, width, 3).
-            segment_size: Number of bytes per segment (default 16).
+            segment_size: Number of pixels per segment (default 32).
         Returns:
             combined_factorizations: List of factorizations per channel and row.
         """
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segments_per_row = width // segment_size  # e.g., 640 / 16 = 40
+        segments_per_row = width // segment_size  # e.g., 640 / 32 = 20
         
         # Prepare tasks for parallel processing
         tasks = []
@@ -1235,40 +1298,38 @@ class VideoApp:
         
         return combined_factorizations
     
-    def decode_prime_factor_row(self, factorizations, height, width, segment_size=16):
+    def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size):
         """
-        Decodes the factorizations back into a frame.
+        Decodes the factorizations back into a frame by using the largest prime factor.
+        Args:
+            combined_factorizations: List of factorizations per channel, row, and segment.
+            height, width: Frame dimensions.
+            segment_size: Number of pixels per segment.
+        Returns:
+            Reconstructed frame.
         """
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        output = np.zeros((height, width, 3), dtype=np.uint8)
         segments_per_row = width // segment_size
         
         for channel in range(3):
             for row in range(height):
-                row_factors = factorizations[channel][row]
-                
-                # Reconstruct the big integer for the entire row
-                N = 1
-                for idx_bits, exp_bits in row_factors:
-                    prime_idx = int(''.join(map(str, idx_bits)), 2)
-                    prime = self.prime_list[prime_idx]
-                    exponent, _ = self.decode_variable_exponent(exp_bits)
-                    N *= prime ** exponent
-                
-                # Convert the big integer back to bytes
-                row_data = []
-                temp_N = N
-                for i in range(width):
-                    byte = temp_N % 256
-                    row_data.append(byte)
-                    temp_N //= 256
-                row_data = row_data[::-1]
-                
-                if len(row_data) < width:
-                    row_data = [0] * (width - len(row_data)) + row_data
-                frame[row, :, channel] = row_data
+                for seg_idx in range(segments_per_row):
+                    factors = combined_factorizations[channel][row][seg_idx]
+                    if not factors:
+                        continue
+                    # Use the largest prime factor as the intensity
+                    if factors:
+                        largest_prime_idx = max(factors.keys(), default=0)
+                        largest_prime = self.prime_list[largest_prime_idx]
+                        intensity = min(largest_prime, 255)  # Cap at 255
+                    else:
+                        intensity = 0
+                    # Apply the intensity to the segment
+                    start = seg_idx * segment_size
+                    end = start + segment_size
+                    output[row, start:end, channel] = intensity
         
-        self.persistent_prime_factor = frame
-        return self.persistent_prime_factor
+        return output
     
     def encode_variable_exponent(self, exponent):
         """
@@ -1528,6 +1589,127 @@ class VideoApp:
     #     self.persistent_prime_factor = frame
         
     #     return self.persistent_prime_factor
+
+    def transformer_pythagorean_triple(self, frame):
+        """
+        Forces each pixel's RGB values to the nearest Pythagorean triple.
+        1. Encodes the frame by mapping to the nearest triple.
+        2. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        frame = frame.astype(np.uint8)
+        
+        # Encode the frame
+        transformed, changed_mask = self.encode_pythagorean_triple(frame)
+        
+        # Decode and return the progressively updated frame
+        return self.decode_pythagorean_triple(transformed, changed_mask)
+    
+    def encode_pythagorean_triple(self, frame):
+        """
+        Encodes the frame by mapping each pixel to the nearest Pythagorean triple.
+        Returns the transformed frame and a mask of changed pixels.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        transformed_frame = np.zeros_like(frame, dtype=np.uint8)
+        changed_mask = np.zeros((height, width), dtype=np.bool)
+        
+        # Flatten the frame for vectorized computation
+        pixels = frame.reshape(-1, 3)  # Shape: (height * width, 3)
+        
+        # Compute distances to all triples for all pixels
+        # pixels: (height * width, 3)
+        # triples: (num_triples, 3)
+        # Broadcasting: (height * width, num_triples, 3)
+        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples[np.newaxis, :, :]
+        distances = np.sqrt(np.sum(diffs ** 2, axis=2))  # Shape: (height * width, num_triples)
+        
+        # Find the nearest triple for each pixel
+        nearest_indices = np.argmin(distances, axis=1)  # Shape: (height * width,)
+        nearest_triples = self.pythagorean_triples[nearest_indices]  # Shape: (height * width, 3)
+        
+        # Reshape back to image dimensions
+        transformed_frame = nearest_triples.reshape(height, width, 3)
+        
+        # Create a mask of changed pixels
+        changed_mask = np.any(frame != transformed_frame, axis=2)
+        
+        return transformed_frame, changed_mask
+
+    def decode_pythagorean_triple(self, frame, changed_mask):
+        """
+        Updates the persistent buffer with the transformed frame where pixels changed.
+        """
+        # Update the persistent buffer
+        self.persistent_pythagorean = np.where(
+            changed_mask[:, :, np.newaxis],
+            frame,
+            self.persistent_pythagorean
+        ).astype(np.uint8)
+        
+        return self.persistent_pythagorean
+    
+    def transformer_pythagorean_snap(self, frame):
+        """
+        Snaps each RGB channel value to the nearest number that appears in a Pythagorean triple.
+        1. Encodes the frame by snapping each channel.
+        2. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        frame = frame.astype(np.uint8)
+        
+        # Encode the frame
+        transformed, changed_mask = self.encode_pythagorean_snap(frame)
+        
+        # Decode and return the progressively updated frame
+        return self.decode_pythagorean_snap(transformed, changed_mask)
+
+    def encode_pythagorean_snap(self, frame):
+        """
+        Encodes the frame by snapping each channel to the nearest Pythagorean number.
+        Returns the transformed frame and a mask of changed pixels.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        transformed_frame = np.zeros_like(frame, dtype=np.uint8)
+        
+        # Process each channel independently
+        for channel in range(3):
+            channel_values = frame[:, :, channel].flatten()  # Shape: (height * width,)
+            # Find the nearest Pythagorean number for each value
+            indices = np.searchsorted(self.pythagorean_numbers, channel_values)
+            # Handle edge cases
+            indices = np.clip(indices, 1, len(self.pythagorean_numbers) - 1)
+            # Compare distances to the two nearest numbers
+            lower = np.array([self.pythagorean_numbers[i-1] for i in indices])
+            upper = np.array([self.pythagorean_numbers[i] for i in indices])
+            distances_lower = np.abs(channel_values - lower)
+            distances_upper = np.abs(channel_values - upper)
+            # Snap to the closer number
+            snapped_values = np.where(
+                distances_lower <= distances_upper,
+                lower,
+                upper
+            )
+            # Reshape back to image dimensions
+            transformed_frame[:, :, channel] = snapped_values.reshape(height, width)
+        
+        # Create a mask of changed pixels
+        changed_mask = np.any(frame != transformed_frame, axis=2)
+        
+        return transformed_frame, changed_mask
+
+    def decode_pythagorean_snap(self, frame, changed_mask):
+        """
+        Updates the persistent buffer with the transformed frame where pixels changed.
+        """
+        # Update the persistent buffer
+        self.persistent_pythagorean_snap = np.where(
+            changed_mask[:, :, np.newaxis],
+            frame,
+            self.persistent_pythagorean_snap
+        ).astype(np.uint8)
+        
+        return self.persistent_pythagorean_snap
 
     def transformer_even_odd_color(self, frame):
         """
