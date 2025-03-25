@@ -68,7 +68,7 @@ def get_pythagorean_numbers():
     
     return sorted(numbers)
 
-def _generate_pythagorean_triples(self):
+def generate_pythagorean_triples():
     """
     Generates all Pythagorean triples with c <= 255, including all permutations.
     Returns a list of triples (a, b, c).
@@ -529,12 +529,12 @@ class VideoApp:
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
         # Pythagorean Triple attributes
-        self.pythagorean_triples = _generate_pythagorean_triples()
-        self.persistent_pythagorean = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+        self.pythagorean_triples_set = generate_pythagorean_triples()
+        self.pythagorean_triples_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Pythagorean Snap attributes
-        self.pythagorean_numbers = get_pythagorean_numbers()
-        self.persistent_pythagorean_snap = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+        self.pythagorean_snap_set = get_pythagorean_numbers()
+        self.pythagorean_snap_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Start Update Loop
         self.update()
@@ -1621,12 +1621,12 @@ class VideoApp:
         # pixels: (height * width, 3)
         # triples: (num_triples, 3)
         # Broadcasting: (height * width, num_triples, 3)
-        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples[np.newaxis, :, :]
+        diffs = pixels[:, np.newaxis, :] - self.pythagorean_triples_set[np.newaxis, :, :]
         distances = np.sqrt(np.sum(diffs ** 2, axis=2))  # Shape: (height * width, num_triples)
         
         # Find the nearest triple for each pixel
         nearest_indices = np.argmin(distances, axis=1)  # Shape: (height * width,)
-        nearest_triples = self.pythagorean_triples[nearest_indices]  # Shape: (height * width, 3)
+        nearest_triples = self.pythagorean_triples_set[nearest_indices]  # Shape: (height * width, 3)
         
         # Reshape back to image dimensions
         transformed_frame = nearest_triples.reshape(height, width, 3)
@@ -1641,13 +1641,13 @@ class VideoApp:
         Updates the persistent buffer with the transformed frame where pixels changed.
         """
         # Update the persistent buffer
-        self.persistent_pythagorean = np.where(
+        self.pythagorean_triples_persistent_frame = np.where(
             changed_mask[:, :, np.newaxis],
             frame,
-            self.persistent_pythagorean
+            self.pythagorean_triples_persistent_frame
         ).astype(np.uint8)
         
-        return self.persistent_pythagorean
+        return self.pythagorean_triples_persistent_frame
     
     def transformer_pythagorean_snap(self, frame):
         """
@@ -1676,12 +1676,12 @@ class VideoApp:
         for channel in range(3):
             channel_values = frame[:, :, channel].flatten()  # Shape: (height * width,)
             # Find the nearest Pythagorean number for each value
-            indices = np.searchsorted(self.pythagorean_numbers, channel_values)
+            indices = np.searchsorted(self.pythagorean_snap_set, channel_values)
             # Handle edge cases
-            indices = np.clip(indices, 1, len(self.pythagorean_numbers) - 1)
+            indices = np.clip(indices, 1, len(self.pythagorean_snap_set) - 1)
             # Compare distances to the two nearest numbers
-            lower = np.array([self.pythagorean_numbers[i-1] for i in indices])
-            upper = np.array([self.pythagorean_numbers[i] for i in indices])
+            lower = np.array([self.pythagorean_snap_set[i-1] for i in indices])
+            upper = np.array([self.pythagorean_snap_set[i] for i in indices])
             distances_lower = np.abs(channel_values - lower)
             distances_upper = np.abs(channel_values - upper)
             # Snap to the closer number
@@ -1703,13 +1703,13 @@ class VideoApp:
         Updates the persistent buffer with the transformed frame where pixels changed.
         """
         # Update the persistent buffer
-        self.persistent_pythagorean_snap = np.where(
+        self.pythagorean_snap_persistent_frame = np.where(
             changed_mask[:, :, np.newaxis],
             frame,
-            self.persistent_pythagorean_snap
+            self.pythagorean_snap_persistent_frame
         ).astype(np.uint8)
         
-        return self.persistent_pythagorean_snap
+        return self.pythagorean_snap_persistent_frame
 
     def transformer_even_odd_color(self, frame):
         """
