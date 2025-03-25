@@ -319,7 +319,9 @@ class VideoApp:
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
-            "Even/Odd": self.transformer_even_odd,
+            "Even/Odd Color": self.transformer_even_odd_color,
+            "Even/Odd Spatial": self.transformer_even_odd_spatial,
+            "RGB Strobe": self.transformer_rgb_strobe,
             "RGB Even-Odd Strobe": self.transformer_rgb_even_odd_strobe,
             "RGB Matrix Strobe": self.transformer_rgb_matrix_strobe,
             "VBPV Prototype": self.transformer_vertical_bitfield_pattern_prototype,
@@ -390,8 +392,8 @@ class VideoApp:
         self.camera_index = self.camera_list[0][0] if self.camera_list else 0
         self.init_camera()
 
-        # RGB Evn/Odd Strobe attributes
-        self.rgb_strobe_cycle = 0
+        # RGB Even/Odd Strobe attributes
+        self.rgb_even_odd_strobe_cycle = 0
         self.rgb_even_odd_strobe_cycle_order = [
             (0, True),  # R odd
             (1, False), # G even
@@ -404,6 +406,24 @@ class VideoApp:
         self.persistent_rgb_even_odd_strobe = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8) # Holds progressively refined frame
 
         self.persistent_rgb_matrix_strobe = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # RGB Strobe attributes
+        self.rgb_strobe_cycle = 0
+        self.rgb_strobe_cycle_order = [
+            (0,),  # R
+            (1,),  # G
+            (2,)   # B
+        ]
+        self.rgb_even_odd_strobe_cycle = 0
+        self.rgb_strobe_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # Even/Odd attributes
+        self.even_odd_color_cycle = True
+        self.even_odd_color_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+
+        # Even/Odd Spatial attributes
+        self.even_odd_spatial_cycle = 0
+        self.even_odd_spatial_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
         # Start Update Loop
         self.update()
@@ -914,41 +934,69 @@ class VideoApp:
     #     self.persistent_frame_col = np.zeros((self.height, self.width, 3), dtype=np.uint8)
     #     self.persistent_frame_col_current_col = 0
 
-    def transformer_even_odd(self, frame, odd=True):
+    def transformer_even_odd_color(self, frame):
         """
-        Converts pixel values to strictly even or strictly odd.
-        - odd=True  -> Converts even values to odd by adding 1.
-        - odd=False -> Converts odd values to even by subtracting 1.
+        Alternates between forcing odd and even values each frame.
+        1. Encodes the frame with the current parity mode.
+        2. Decodes the frame into the persistent buffer for progressive reconstruction.
         """
-        if odd:
-            # Ensure all values are odd (except 255 remains unchanged)
-            transformed_frame = np.where((frame % 2 == 0) & (frame < 255), frame + 1, frame)
-        else:
-            # Ensure all values are even (except 0 remains unchanged)
-            transformed_frame = np.where((frame % 2 == 1) & (frame > 0), frame - 1, frame)
+        frame = frame.astype(np.uint8)
         
-        return transformed_frame.astype(np.uint8)
+        # Initialize even_odd_cycle as a boolean if not present
+        # if not hasattr(self, 'even_odd_cycle'):
+        #     self.even_odd_color_cycle = True  # Start with odd=True for the first frame
+        
+        # Encode the frame
+        transformed, changed_mask = self.encode_even_odd_color(frame)
+        
+        # Decode and return the progressively updated frame
+        return self.decode_even_odd_color(transformed, changed_mask)
 
-    def encode_even_odd(self, frame, odd=True):
+    def encode_even_odd_color(self, frame):
         """
-        Encodes the frame by applying the odd/even transformation.
-        Returns the transformed frame data.
+        Encodes the frame by applying the odd/even transformation based on self.even_odd_cycle.
+        Returns the transformed frame data and a mask of changed pixels.
         """
-        return self.transformer_even_odd(frame, odd=odd)
-    
-    def decode_even_odd(self, frame, odd=True):
-        """
-        Attempts to reverse the transformation by guessing the original pixel values.
-        This is lossy since we only know whether the number was odd/even, not the original value.
-        """
-        if odd:
-            # Try to recover even values by subtracting 1 (except 255 remains unchanged)
-            decoded_frame = np.where((frame % 2 == 1) & (frame > 0), frame - 1, frame)
-        else:
-            # Try to recover odd values by adding 1 (except 0 remains unchanged)
-            decoded_frame = np.where((frame % 2 == 0) & (frame < 255), frame + 1, frame)
+        frame = frame.astype(np.uint8)
+        
+        # Read the current parity mode
+        odd = self.even_odd_cycle
+        
+        # Compute the mask of changed pixels
+        target_parity = 1 if odd else 0
+        boundary_value = 255 if odd else 0
+        changed_mask = (frame % 2 != target_parity) & (frame != boundary_value)
+        
+        # Apply the transformation in one line
+        adjustment = 2 * odd - 1  # 1 if odd=True, -1 if odd=False
+        transformed_frame = np.where(changed_mask, frame + adjustment, frame)
+        
+        return transformed_frame.astype(np.uint8), changed_mask
 
-        return decoded_frame.astype(np.uint8)
+    def decode_even_odd_color(self, frame, changed_mask):
+        """
+        Reverses the transformation only for pixels that were changed and updates the persistent buffer.
+        Inverts self.even_odd_cycle for the next frame.
+        """
+        # Read the current parity mode
+        odd = self.even_odd_color_cycle
+        
+        # Determine the target parity and adjustment
+        target_parity = 1 if odd else 0
+        adjustment = -1 if odd else 1  # Subtract 1 if odd=True, add 1 if odd=False
+        boundary_check = (frame > 0) if odd else (frame < 255)
+        
+        # Reverse the transformation
+        condition = changed_mask & (frame % 2 == target_parity) & boundary_check
+        decoded_frame = np.where(condition, frame + adjustment, frame)
+        
+        # Update the persistent buffer
+        self.even_odd_color_persistent_frame = np.where(changed_mask, decoded_frame, self.even_odd_color_persistent_frame).astype(np.uint8)
+        
+        # Invert even_odd_cycle for the next frame
+        self.even_odd_color_cycle = not self.even_odd_color_cycle
+        
+        return self.even_odd_color_persistent_frame
     
     def transformer_rgb_even_odd_strobe(self, frame):
         """
@@ -961,7 +1009,7 @@ class VideoApp:
         frame = frame.astype(np.uint8)
 
         # Step 1: Get next transmission cycle (numeric channel index and isOdd flag)
-        channel_idx, isOdd = self.get_next_strobe_params()
+        channel_idx, isOdd = self.get_next_rgb_even_odd_strobe_params()
 
         # Step 2: Encode the frame (apply even/odd filtering to the selected channel)
         output_frame, update_mask, channel_idx, isOdd = self.encode_rgb_even_odd_strobe(frame, channel_idx, isOdd)
@@ -1012,10 +1060,10 @@ class VideoApp:
 
         return self.persistent_rgb_even_odd_strobe
     
-    def get_next_strobe_params(self):
-        channel_idx, isOdd = self.rgb_even_odd_strobe_cycle_order[self.rgb_strobe_cycle]
+    def get_next_rgb_even_odd_strobe_params(self):
+        channel_idx, isOdd = self.rgb_even_odd_strobe_cycle_order[self.rgb_even_odd_strobe_cycle]
         # print(f"Cycle {self.rgb_strobe_cycle}: Channel {channel_idx}, isOdd={isOdd}")
-        self.rgb_strobe_cycle = (self.rgb_strobe_cycle + 1) % 6
+        self.rgb_even_odd_strobe_cycle = (self.rgb_even_odd_strobe_cycle + 1) % 6
 
         return channel_idx, isOdd
     
@@ -1081,13 +1129,135 @@ class VideoApp:
         frame = frame.astype(np.uint8)
 
         # Step 1: Get next transmission cycle (numeric channel index and isOdd flag)
-        channel_idx, isOdd = self.get_next_strobe_params()
+        channel_idx, isOdd = self.get_next_rgb_even_odd_strobe_params()
 
         # Step 2: Encode the frame (apply even/odd pixel filtering to the selected channel)
         output_frame, channel_idx, isOdd = self.encode_rgb_matrix_strobe(frame, channel_idx, isOdd)
 
         # Step 3: Decode and return the progressively updated frame
         return self.decode_rgb_matrix_strobe(output_frame, channel_idx, isOdd)
+    
+    def transformer_rgb_strobe(self, frame):
+        """
+        Applies the RGB split transformation:
+        1. Selects the next RGB channel.
+        2. Encodes the frame with only the selected channel.
+        3. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
+
+        # Step 1: Get the next channel
+        channel_idx = self.get_next_rgb_strobe_params()
+
+        # Step 2: Encode the frame (extract the selected channel)
+        output_frame, channel_idx = self.encode_rgb_strobe(frame, channel_idx)
+
+        # Step 3: Decode and return the progressively updated frame
+        return self.decode_rgb_strobe(output_frame, channel_idx)
+    
+    def encode_rgb_strobe(self, frame, channel_idx):
+        """
+        Extracts the specified RGB channel and sets the other channels to 0.
+        - channel_idx: 0 (R), 1 (G), 2 (B)
+        Returns: (output_frame, channel_idx)
+        """
+        # Ensure frame is uint8
+        frame = frame.astype(np.uint8)
+        
+        # Create an output frame with all channels set to 0
+        output_frame = np.zeros_like(frame, dtype=np.uint8)
+        
+        # Copy the selected channel to the output frame
+        output_frame[:, :, channel_idx] = frame[:, :, channel_idx]
+        
+        return output_frame, channel_idx
+    
+    def decode_rgb_strobe(self, encoded_frame, channel_idx):
+        """
+        Updates the persistent buffer with the transmitted channel.
+        - encoded_frame: The current incoming encoded frame
+        - channel_idx: The channel index (0 = R, 1 = G, 2 = B)
+        """
+        # Extract the transmitted channel data
+        new_data = encoded_frame[:, :, channel_idx]
+
+        # Update the persistent buffer for the selected channel
+        self.rgb_strobe_persistent_frame[:, :, channel_idx] = new_data.astype(np.uint8)
+
+        return self.rgb_strobe_persistent_frame
+    
+    def transformer_even_odd_spatial(self, frame):
+        """
+        Applies the spatial even/odd transformation:
+        1. Selects the next even/odd mode.
+        2. Encodes the frame with the selected parity and position.
+        3. Decodes the frame into the persistent buffer for progressive reconstruction.
+        """
+        frame = frame.astype(np.uint8)
+        
+        # Get the next mode (isOdd alternates between True and False)
+        isOdd = (self.even_odd_spatial_cycle % 2 == 0)
+        self.even_odd_spatial_cycle += 1
+        
+        # Encode the frame
+        output_frame, update_mask, isOdd = self.encode_even_odd_spatial(frame, isOdd)
+        
+        # Decode and return the progressively updated frame
+        return self.decode_even_odd_spatial(output_frame, update_mask, isOdd)
+    
+    def decode_even_odd_spatial(self, encoded_frame, update_mask, isOdd):
+        """
+        Updates the persistent buffer with the transmitted even/odd values.
+        """
+        # Update the persistent buffer where update_mask is True
+        self.even_odd_spatial_persistent_frame = np.where(
+            update_mask[:, :, None], encoded_frame, self.even_odd_spatial_persistent_frame
+        ).astype(np.uint8)
+        
+        return self.even_odd_spatial_persistent_frame
+    
+    def encode_even_odd_spatial(self, frame, isOdd=True):
+        """
+        Extracts even or odd values based on a checkerboard pattern.
+        - isOdd=True:  Even positions get even values, odd positions get odd values.
+        - isOdd=False: Even positions get odd values, odd positions get even values.
+        Returns: (output_frame, update_mask, isOdd)
+        """
+        frame = frame.astype(np.uint8)
+        height, width = frame.shape[:2]
+        
+        # Create a checkerboard mask for even/odd positions
+        row_indices, col_indices = np.indices((height, width))
+        checkerboard = (row_indices + col_indices) % 2  # Shape: (480, 640)
+        
+        # Compute parity of frame values
+        parity = frame % 2  # Shape: (480, 640, 3)
+        
+        # Add a new axis to checkerboard to broadcast across channels
+        checkerboard = checkerboard[:, :, None]  # Shape: (480, 640, 1)
+        
+        # Determine which values to keep based on position and parity
+        if isOdd:
+            update_mask = ((checkerboard == 0) & (parity == 0)) | ((checkerboard == 1) & (parity == 1))
+        else:
+            update_mask = ((checkerboard == 0) & (parity == 1)) | ((checkerboard == 1) & (parity == 0))
+        
+        # Reduce the update_mask to a 2D array: update a pixel if any channel should be updated
+        update_mask = np.any(update_mask, axis=2)  # Shape: (480, 640)
+        
+        # Create output frame: keep values where update_mask is True, set others to 0
+        output_frame = np.where(update_mask[:, :, None], frame, 0)
+        
+        return output_frame, update_mask, isOdd
+    
+    def get_next_rgb_strobe_params(self):
+        """
+        Returns the next transmission cycle for RGB Split: (RGB index,)
+        """
+        channel_idx = self.rgb_strobe_cycle_order[self.rgb_strobe_cycle][0]
+        self.rgb_strobe_cycle = (self.rgb_strobe_cycle + 1) % 3
+        return channel_idx
 
     def transformer_mondrian_2(self, frame):
         h, w, _ = frame.shape
