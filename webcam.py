@@ -942,15 +942,11 @@ class VideoApp:
         """
         frame = frame.astype(np.uint8)
         
-        # Initialize even_odd_cycle as a boolean if not present
-        # if not hasattr(self, 'even_odd_cycle'):
-        #     self.even_odd_color_cycle = True  # Start with odd=True for the first frame
-        
         # Encode the frame
-        transformed, changed_mask = self.encode_even_odd_color(frame)
+        transformed, changed_mask, isOdd = self.encode_even_odd_color(frame)
         
         # Decode and return the progressively updated frame
-        return self.decode_even_odd_color(transformed, changed_mask)
+        return self.decode_even_odd_color(transformed, changed_mask, isOdd)
 
     def encode_even_odd_color(self, frame):
         """
@@ -960,7 +956,7 @@ class VideoApp:
         frame = frame.astype(np.uint8)
         
         # Read the current parity mode
-        odd = self.even_odd_cycle
+        odd = self.even_odd_color_cycle
         
         # Compute the mask of changed pixels
         target_parity = 1 if odd else 0
@@ -971,9 +967,9 @@ class VideoApp:
         adjustment = 2 * odd - 1  # 1 if odd=True, -1 if odd=False
         transformed_frame = np.where(changed_mask, frame + adjustment, frame)
         
-        return transformed_frame.astype(np.uint8), changed_mask
+        return transformed_frame.astype(np.uint8), changed_mask, odd
 
-    def decode_even_odd_color(self, frame, changed_mask):
+    def decode_even_odd_color(self, frame, changed_mask, isOdd):
         """
         Reverses the transformation only for pixels that were changed and updates the persistent buffer.
         Inverts self.even_odd_cycle for the next frame.
