@@ -1,4 +1,4 @@
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import multiprocessing as mp
 import cv2
 import numpy as np
@@ -14,21 +14,34 @@ import subprocess
 from sympy import factorint, primerange
 import itertools
 
+prime_list = list(primerange(2, 1000))
+prime_index = {p: i for i, p in enumerate(prime_list)}
+factor_lookup = {}
+
+for n in range(8161):
+    factors = factorint(n)
+    factor_lookup[n] = {prime_index[p]: e for p, e in factors.items() if p in prime_index}
+
 def factor_segment(segment_data, segment_size, prime_index):
-    N = 0
+    N = int(np.sum(segment_data))  # Sum is 0 to 8160
 
-    for i, byte in enumerate(segment_data):
-        N += byte * (256 ** (segment_size - 1 - i))
+    return factor_lookup[N]
 
-    factors = factorint(N)
-    segment_factors = {}
+# def factor_segment(segment_data, segment_size, prime_index):
+#     N = 0
 
-    for prime, exponent in factors.items():
-        if prime in prime_index:
-            prime_idx = prime_index[prime]
-            segment_factors[prime_idx] = exponent
+#     for i, byte in enumerate(segment_data):
+#         N += byte * (256 ** (segment_size - 1 - i))
 
-    return segment_factors
+#     factors = factorint(N)
+#     segment_factors = {}
+
+#     for prime, exponent in factors.items():
+#         if prime in prime_index:
+#             prime_idx = prime_index[prime]
+#             segment_factors[prime_idx] = exponent
+
+#     return segment_factors
 
 def process_segment_task(task):
     """
@@ -559,9 +572,13 @@ class VideoApp:
 
         # Prime Factor Row attributes
         self.prime_list = list(primerange(2, 1000))
-        self.prime_index = {p: i for i, p in enumerate(self.prime_list)}
+
         self.persistent_prime_factor = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
         self.num_workers = mp.cpu_count()
+        self.factor_lookup = {}
+        for n in range(8161):
+            factors = factorint(n)
+            self.factor_lookup[n] = {prime_index[p]: e for p, e in factors.items() if p in prime_index}
 
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
@@ -1256,24 +1273,20 @@ class VideoApp:
         return row_factors
 
     def transformer_prime_factor_row(self, frame):
-        # print("Encoding prime factor row")
-        # if hasattr(self, 'processed_one_frame') and self.processed_one_frame:
-        #         print("Skipping processing after one frame")
-        #         return frame  # Skip processing after one frame
+        if not hasattr(self, 'processing') or not self.processing:
+            self.processing = True
+            threading.Thread(target=self._process_frame, args=(frame,), daemon=True).start()
+        
+        return self.last_display_frame if self.last_display_frame is not None else frame
+    
+    def _process_frame(self, frame):
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segment_size = 4
-
-        # print("Encoding prime factor row")
-        combined_factorizations = self.encode_prime_factor_row(frame, segment_size)
-
-        # print("Decoding prime factor row")
+        segment_size = 32
+        combined_factorizations = self.encode_prime_factor_segments(frame, segment_size)
         decoded_frame = self.decode_prime_factor_row(combined_factorizations, height, width, segment_size)
-
-        # print("Finished processing frame")
-        # self.processed_one_frame = True
-
-        return decoded_frame
+        self.last_display_frame = decoded_frame
+        self.processing = False
 
     # def transformer_prime_factor_row(self, frame):
     #     """
@@ -1302,55 +1315,90 @@ class VideoApp:
     #     # Decode and return the frame
     #     return self.decode_prime_factor_row(factorizations, height, width)
     
-    def encode_prime_factor_row(self, frame, segment_size=4):  # Reduced size for practicality
+    def encode_prime_factor_row(self, frame, segment_size=32):
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
         segments_per_row = width // segment_size
-        tasks = []
+
+        # Reshape frame to (channels, height, segments_per_row, segment_size)
+        frame_reshaped = frame.reshape(height, segments_per_row, segment_size, 3).transpose(3, 0, 1, 2)
+
+        # Compute sums for all segments at once
+        segment_sums = frame_reshaped.sum(axis=3).astype(np.int32)  # Shape: (3, height, segments_per_row)
+
+        # Map sums to factorizations using a list comprehension (or NumPy vectorization if possible)
+        combined_factorizations = np.empty((3, height, segments_per_row), dtype=object)
 
         for channel in range(3):
             for row in range(height):
                 for seg_idx in range(segments_per_row):
-                    start = seg_idx * segment_size
-                    end = start + segment_size
-                    segment_data = frame[row, start:end, channel]
-                    tasks.append((segment_data, segment_size, self.prime_index, channel, row, seg_idx))
-
-        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            results = list(executor.map(process_segment_task, tasks))
-
-        combined_factorizations = [[[None for _ in range(segments_per_row)] for _ in range(height)] for _ in range(3)]
-
-        for segment_factors, channel, row, seg_idx in results:
-            combined_factorizations[channel][row][seg_idx] = segment_factors
-
-        return combined_factorizations
+                    N = segment_sums[channel, row, seg_idx]
+                    combined_factorizations[channel, row, seg_idx] = self.factor_lookup[N]
+        
+        return combined_factorizations.tolist()
     
-    def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size=4):
+    def decode_prime_factor_row(self, combined_factorizations, height, width, segment_size):
         output = np.zeros((height, width, 3), dtype=np.uint8)
         segments_per_row = width // segment_size
+        factor_array = np.array(combined_factorizations, dtype=object)  # Shape: (3, height, segments_per_row)
 
+        # Flatten factorizations for vectorized processing
+        flat_factors = factor_array.flatten()  # Shape: (3 * height * segments_per_row,)
+        N_values_flat = np.zeros(len(flat_factors), dtype=np.int64)
+        for i, factors in enumerate(flat_factors):
+            N = 1
+            for prime_idx, exponent in factors.items():
+                prime = self.prime_list[prime_idx]
+                N *= prime ** exponent
+            N_values_flat[i] = min(N, 8160)
+
+        # Reshape back
+        N_values = N_values_flat.reshape(3, height, segments_per_row)
+
+        # Compute avg_value and remainder for all segments
+        avg_values = (N_values // segment_size).astype(np.uint8)
+        remainders = N_values % segment_size
+
+        # Expand to pixel level (vectorized)
+        output_reshaped = output.reshape(height, segments_per_row, segment_size, 3).transpose(3, 0, 1, 2)
+        output_reshaped[...] = avg_values[:, :, :, np.newaxis]  # Broadcast avg_values to all pixels in segment
+        # Add remainder: set the first 'remainder' pixels to avg_value + 1
         for channel in range(3):
             for row in range(height):
                 for seg_idx in range(segments_per_row):
-                    start = seg_idx * segment_size
-                    end = start + segment_size
-                    segment_factors = combined_factorizations[channel][row][seg_idx]
-                    N = 1
-
-                    for prime_idx, exponent in segment_factors.items():
-                        prime = self.prime_list[prime_idx]
-                        N *= prime ** exponent
-
-                    segment_data = np.zeros(segment_size, dtype=np.uint8)
-
-                    for i in range(segment_size - 1, -1, -1):
-                        segment_data[i] = N % 256
-                        N //= 256
-
-                    output[row, start:end, channel] = segment_data
+                    remainder = remainders[channel, row, seg_idx]
+                    if remainder > 0:
+                        start = seg_idx * segment_size
+                        output[row, start:start + remainder, channel] += 1
 
         return output
+    
+    def encode_prime_factor_segments(self, frame, segment_size=32):
+        """
+        Encode a frame into prime factorizations for each segment.
+        
+        Args:
+            frame: NumPy array of shape (height, width, 3) with uint8 values.
+            segment_size: Size of each segment (default: 32).
+        
+        Returns:
+            combined_factorizations: Array of shape (3, height, segments_per_row) with factorization dicts.
+        """
+        frame = frame.astype(np.uint8)
+        height, width, _ = frame.shape
+        segments_per_row = width // segment_size
+        
+        # Reshape frame to (channels, height, segments_per_row, segment_size)
+        frame_reshaped = frame.reshape(height, segments_per_row, segment_size, 3).transpose(3, 0, 1, 2)
+        # Compute sums for all segments at once
+        segment_sums = frame_reshaped.sum(axis=3).astype(np.int32)  # Shape: (3, height, segments_per_row)
+        
+        # Vectorized lookup
+        flat_sums = segment_sums.flatten()  # Shape: (3 * height * segments_per_row,)
+        factorizations_flat = [self.factor_lookup[sum_val] for sum_val in flat_sums]
+        combined_factorizations = np.array(factorizations_flat, dtype=object).reshape(3, height, segments_per_row)
+        
+        return combined_factorizations
     
     def encode_variable_exponent(self, exponent):
         """
@@ -1418,7 +1466,7 @@ class VideoApp:
             for col in range(width):
                 for channel in range(3):
                     value = frame[row, col, channel]
-                    tasks.append((value, self.prime_index, row, col, channel))
+                    tasks.append((value, prime_index, row, col, channel))
         
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
             results = list(executor.map(lambda t: (self.factor_8bit(t[0], t[1]), t[2], t[3], t[4]), tasks))
@@ -1906,7 +1954,7 @@ class VideoApp:
         # Extract the transmitted channel data
         new_data = encoded_frame[:, :, channel_idx]
 
-        # Create the same checkerboard mask as in the encoder
+        # Create the same checkerboard mask as in the encode function
         height, width = new_data.shape
         row_indices, col_indices = np.indices((height, width))
         checkerboard = (row_indices + col_indices) % 2
@@ -2224,15 +2272,6 @@ class VideoApp:
             cv2.rectangle(mondrian_frame, (x, y), (x+rect_w, y+rect_h), (0,0,0), thickness=3)
 
         return mondrian_frame
-    
-    def transformer_incremental(self, frame):
-        # Encode the frame
-        encoded_data = self.transformer_incremental_encode(frame)
-        
-        # Decode using the encoded data
-        decoded_frame = self.transformer_incremental_decode(encoded_data)
-        
-        return decoded_frame
     
     def get_diagonal_indices(self, start_x, start_y, width, height):
         """Compute the indices of a diagonal starting at (start_x, start_y) with wrapping."""
@@ -2863,10 +2902,10 @@ class VideoApp:
         Returns:
             reconstructed_frame: NumPy array of shape (480, 640, 3) with uint8 values.
         """
-        compressed_data = self.encoder_compressed_frame(frame)
-        return self.decoder_compressed_frame(compressed_data)
+        compressed_data = self.encode_compressed_frame(frame)
+        return self.decode_compressed_frame(compressed_data)
     
-    def encoder_compressed_frame(self, frame):
+    def encode_compressed_frame(self, frame):
         """
         Encode a 640x480x24-bit frame into a 4-bit seed map and three 256-value palettes.
         
@@ -2898,7 +2937,7 @@ class VideoApp:
 
         return seed_map, palette_r, palette_g, palette_b
     
-    def decoder_compressed_frame(self, compressed_data):
+    def decode_compressed_frame(self, compressed_data):
         """
         Decode a compressed frame from a 4-bit seed map and three 256-value palettes.
         
@@ -3091,10 +3130,12 @@ class VideoApp:
         """
         h, w = lookup_map.shape
         reconstructed_frame = np.zeros((h, w, 3), dtype=np.uint8)
+        
         for i in range(h):
             for j in range(w):
                 idx = lookup_map[i, j]
                 reconstructed_frame[i, j] = palette[idx]
+        
         return reconstructed_frame
 
     def transformer_24_15bit_compress(self, frame):
@@ -3210,6 +3251,15 @@ class VideoApp:
             )
 
         return annotated_frame
+    
+    def transformer_incremental(self, frame):
+        # Encode the frame
+        encoded_data = self.encode_incremental(frame)
+        
+        # Decode using the encoded data
+        decoded_frame = self.decode_incremental(encoded_data)
+        
+        return decoded_frame
 
     def encode_incremental(self, frame):
         h, w, _ = frame.shape
@@ -3230,7 +3280,7 @@ class VideoApp:
         # Return this XOR constraint as encoded data
         return xor_constraint.tobytes()  # return bytes directly for compactness
 
-    # Decoder function (for incremental reconstruction from constraints):
+    # Decode function (for incremental reconstruction from constraints):
     def decode_incremental(self, encoded_data):
         h, w = self.frame_h, self.frame_w  # set these in __init__
         blocks_vertical = h // self.block_size
