@@ -21,12 +21,14 @@ def factor_segment(segment_data, segment_size, prime_index):
     N = 0
     for i, byte in enumerate(segment_data):
         N += byte * (256 ** (segment_size - 1 - i))
+    print(f"Segment N: {N}")
     factors = factorint(N)
     segment_factors = {}
     for prime, exponent in factors.items():
         if prime in prime_index:
             prime_idx = prime_index[prime]
             segment_factors[prime_idx] = exponent
+    print(f"Segment Factors: {segment_factors}")
     return segment_factors
 
 def process_segment_task(task):
@@ -467,7 +469,7 @@ class VideoApp:
         self.prime_list = list(primerange(2, 1000))
         self.prime_index = {p: i for i, p in enumerate(self.prime_list)}
         self.persistent_prime_factor = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
-        self.num_workers = mp.cpu_count()
+        self.num_workers = 4 # mp.cpu_count()
 
         print(f"Using {self.num_workers} workers for Prime Factor Row transformer.")
 
@@ -1153,18 +1155,24 @@ class VideoApp:
         return row_factors
 
     def transformer_prime_factor_row(self, frame):
-        """
-        Encodes each row of each channel by factoring segments, then decodes the result.
-        """
+        print("Encoding prime factor row")
+        if hasattr(self, 'processed_one_frame') and self.processed_one_frame:
+                print("Skipping processing after one frame")
+                return frame  # Skip processing after one frame
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
         segment_size = 16
-        
-        # Encode the frame
+
+        print("Encoding prime factor row")
         combined_factorizations = self.encode_prime_factor_row(frame, segment_size)
-        
-        # Decode and return the frame
-        return self.decode_prime_factor_row(combined_factorizations, height, width, segment_size)
+
+        print("Decoding prime factor row")
+        decoded_frame = self.decode_prime_factor_row(combined_factorizations, height, width, segment_size)
+
+        print("Finished processing frame")
+        self.processed_one_frame = True
+
+        return decoded_frame
 
     # def transformer_prime_factor_row(self, frame):
     #     """
