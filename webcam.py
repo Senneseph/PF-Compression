@@ -159,6 +159,33 @@ def generate_pythagorean_triples(max_value):
     
 #     return np.array(triples, dtype=np.uint8)
 
+# Helper: Compute complexity and subdivide deterministically
+def compute_complexity_and_subdivide(frame, x, y, w, h, threshold=5000, min_size=40):
+    roi = frame[y:y+h, x:x+w]
+    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray_roi, 50, 150)
+    complexity = np.sum(edges)
+
+    if complexity > threshold and w > min_size and h > min_size:
+        # Deterministic split: always split at 40% and 60% to avoid randomness
+        if w > h:  # Split vertically
+            split1 = x + int(w * 0.4)
+            split2 = x + int(w * 0.6)
+            return [
+                (x, y, split1 - x, h),
+                (split1, y, split2 - split1, h),
+                (split2, y, x + w - split2, h)
+            ]
+        else:  # Split horizontally
+            split1 = y + int(h * 0.4)
+            split2 = y + int(h * 0.6)
+            return [
+                (x, y, w, split1 - y),
+                (x, split1, w, split2 - split1),
+                (x, split2, w, y + h - split2)
+            ]
+    return [(x, y, w, h)]
+
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
     [227, 66, 52],    # Mondrian Red
@@ -486,6 +513,9 @@ class VideoApp:
             "Compressed Frame": self.transformer_compressed_frame,
             "Matrix Digital Rain": self.transformer_matrix,
             "Incremental Encode": self.transformer_incremental,
+            "Bit Depth Strobe": self.transformer_bit_depth_strobe,
+            "Bit Depth Resolve (prototype)": self.transformer_bit_depth_resolve_prototype,
+            "Bit Depth Resolve": self.transformer_bit_depth_resolve,
             "Vectorwave": self.transformer_vectorwave,
             "Fibonacci Compression": self.transformer_fibonacci,
             "Retro Compression": self.transformer_retro,
@@ -502,6 +532,7 @@ class VideoApp:
             "Fibonacci RGB": self.transformer_fibonacci_rgb,
             "Mondrian": self.transformer_mondrian,
             "Mondrian 2": self.transformer_mondrian_2,
+            "Mondrian Next": self.transformer_mondrian_next,
             "Complexity Test": self.transformer_complexity_test,
             "Metrics": self.transformer_metrics,
         }
@@ -874,6 +905,7 @@ class VideoApp:
         distances = np.sqrt(np.sum((MONDRIAN_PALETTE - pixels[:, None]) ** 2, axis=2))
         closest_colors = np.argmin(distances, axis=1)
         hist = np.bincount(closest_colors, minlength=len(MONDRIAN_PALETTE))
+
         return MONDRIAN_PALETTE[np.argmax(hist)]
 
     def assign_colors(self, regions, dominant_colors):
@@ -892,11 +924,22 @@ class VideoApp:
             # Avoid neighbor colors
             neighbor_colors = [assigned_colors[n] for n in neighbors if n < len(assigned_colors)]
             candidate_color = dominant_colors[i]
+
             while candidate_color.tolist() in [c.tolist() for c in neighbor_colors]:
                 candidate_idx = (np.argmax(np.all(MONDRIAN_PALETTE == candidate_color, axis=1)) + 1) % len(MONDRIAN_PALETTE)
                 candidate_color = MONDRIAN_PALETTE[candidate_idx]
+
             assigned_colors.append(candidate_color)
+
         return assigned_colors
+
+    # def get_dominant_color(self, roi):
+    #     pixels = roi.reshape(-1, 3)
+    #     distances = np.sqrt(np.sum((MONDRIAN_PALETTE - pixels[:, None]) ** 2, axis=2))
+    #     closest_colors = np.argmin(distances, axis=1)
+    #     hist = np.bincount(closest_colors, minlength=len(MONDRIAN_PALETTE))
+
+    #     return MONDRIAN_PALETTE[np.argmax(hist)]
 
     def create_region_palette(self, dominant_color):
         """Create a 5-color palette for a region, excluding black."""
@@ -2050,7 +2093,7 @@ class VideoApp:
             for i in range(0, h, h // grid_size):
                 for j in range(0, w, w // grid_size):
                     self.mondrian_map = regions  # Temporarily store for neighbor checks
-                    sub_regions = self.compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
+                    sub_regions = compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
                     regions.extend(sub_regions)
             
             # Enforce minimum 5 regions per color
@@ -2108,6 +2151,41 @@ class VideoApp:
             cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
 
         self.frame_count += 1
+        return output_frame
+    
+    def transformer_mondrian_next(self, frame):
+        h, w, _ = frame.shape
+        output_frame = frame.copy()
+
+        # Step 1: Subdivide based on complexity
+        regions = []
+        grid_size = 8
+        for i in range(0, h, h // grid_size):
+            for j in range(0, w, w // grid_size):
+                sub_regions = compute_complexity_and_subdivide(frame, j, i, w // grid_size, h // grid_size)
+                regions.extend(sub_regions)
+
+        # Step 2: Get dominant colors and assign with variation
+        dominant_colors = [self.get_dominant_color(frame[y:y+h, x:x+w]) for (x, y, w, h) in regions]
+        assigned_colors = self.assign_colors(regions, dominant_colors)
+
+        # Step 3: Process each region
+        for (x, y, w, h), color in zip(regions, assigned_colors):
+            if w < 20 or h < 20:
+                continue
+
+            # Create 5-color palette for this region
+            region_palette = self.create_region_palette(color)
+
+            # Map pixels in the region to the limited palette
+            roi = output_frame[y:y+h, x:x+w]
+            mapped_roi = self.map_pixels(roi, region_palette)
+            output_frame[y:y+h, x:x+w] = mapped_roi
+
+            # Draw black lines (thickness scaled by region size)
+            thickness = max(2, min(6, int((w + h) / 50)))
+            cv2.rectangle(output_frame, (x, y), (x+w, y+h), (0, 0, 0), thickness=thickness)
+
         return output_frame
     
     def transformer_complexity_test(self, frame):
@@ -3243,6 +3321,268 @@ class VideoApp:
                 idx += 1
 
         return reconstructed_frame
+    
+    def transformer_bit_depth_strobe(self, frame):
+        """
+        Transform the frame by transmitting one bit layer per frame for all RGB channels.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            np.ndarray: Updated frame with the current bit layer applied.
+        """
+        # Initialize persistent state if not set
+        if not hasattr(self, 'bit_depth_strobe_persistent_frame'):
+            self.bit_depth_strobe_persistent_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.bit_depth_strobe_current_bit = 0
+        
+        # Encode the current bit layer
+        encoded_data = self.encode_bit_depth_strobe(frame)
+        
+        # Decode into the persistent frame
+        output_frame = self.decode_bit_depth_strobe(encoded_data)
+        
+        # Increment the bit layer, cycling back to 0 after 7
+        self.bit_depth_strobe_current_bit = (self.bit_depth_strobe_current_bit + 1) % 8
+        
+        return output_frame
+    
+    def encode_bit_depth_strobe(self, frame):
+        """
+        Encode the frame by extracting the current bit layer for all RGB channels.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (bit_layer, mask)
+                - bit_layer: Integer (0-7) indicating the current bit being transmitted.
+                - mask: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) for R, G, B.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        # Extract the current bit layer from all channels
+        bit_layer = self.bit_depth_strobe_current_bit
+        mask = (frame >> bit_layer) & 1  # Shape: (480, 640, 3), values 0 or 1
+        
+        return bit_layer, mask
+    
+    def decode_bit_depth_strobe(self, encoded_data):
+        """
+        Decode the bit layer into the persistent frame, replacing the specified bit.
+        
+        Args:
+            encoded_data: tuple (bit_layer, mask)
+                - bit_layer: Integer (0-7) indicating the bit being updated.
+                - mask: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1).
+        
+        Returns:
+            np.ndarray: Updated persistent frame with the new bit layer applied.
+        """
+        bit_layer, mask = encoded_data
+        assert mask.shape == (480, 640, 3) and mask.dtype == np.uint8, "Mask must be 480x640x3 uint8"
+        assert 0 <= bit_layer <= 7, "Bit layer must be between 0 and 7"
+        
+        # Compute bit_mask as uint8
+        bit_mask = np.uint8(~(1 << bit_layer))  # e.g., for bit 2: ~0b100 = 0b11111011 = 251
+        
+        # Clear the current bit layer in the persistent frame
+        self.bit_depth_strobe_persistent_frame = (
+            self.bit_depth_strobe_persistent_frame & bit_mask
+        ).astype(np.uint8)
+        
+        # Set the new bit layer
+        self.bit_depth_strobe_persistent_frame = (
+            self.bit_depth_strobe_persistent_frame | (mask << bit_layer)
+        ).astype(np.uint8)
+        
+        return self.bit_depth_strobe_persistent_frame.copy()
+    
+
+    
+    def transformer_bit_depth_resolve_prototype(self, frame):
+        """
+        Transform the frame by updating the bit layer with the most changes for one RGB channel.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            np.ndarray: Updated frame with the selected bit layer applied.
+        """
+        # Initialize persistent state if not set
+        if not hasattr(self, 'bit_depth_resolve_persistent_frame'):
+            self.bit_depth_resolve_persistent_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        # Encode the frame, choosing the most changed bit layer
+        encoded_data = self.encode_bit_depth_resolve_prototype(frame)
+        
+        # Decode into the persistent frame
+        output_frame = self.decode_bit_depth_resolve_prototype(encoded_data)
+        
+        return output_frame
+    
+    def encode_bit_depth_resolve_prototype(self, frame):
+        """
+        Encode the frame by selecting the RGB channel and bit layer with the most changes.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (channel, bit_layer, mask)
+                - channel: Integer (0=R, 1=G, 2=B) indicating the updated channel.
+                - bit_layer: Integer (0-7) indicating the bit being updated.
+                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1) for the chosen channel.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        # Compute differences for each channel and bit layer
+        changes = np.zeros((3, 8), dtype=np.int32)  # [channel, bit] → number of differing bits
+
+        for channel in range(3):  # R, G, B
+            current_bits = self.bit_depth_resolve_persistent_frame[:, :, channel]
+            new_bits = frame[:, :, channel]
+
+            for bit in range(8):
+                current_mask = (current_bits >> bit) & 1
+                new_mask = (new_bits >> bit) & 1
+                changes[channel, bit] = np.sum(current_mask != new_mask)
+        
+        # Find the channel and bit with the most changes
+        channel, bit_layer = np.unravel_index(np.argmax(changes), changes.shape)
+        
+        # Extract the bit mask for the chosen channel and layer
+        mask = (frame[:, :, channel] >> bit_layer) & 1  # Shape: (480, 640)
+        
+        return channel, bit_layer, mask
+    
+    def decode_bit_depth_resolve_prototype(self, encoded_data):
+        """
+        Decode the bit layer into the persistent frame for the specified channel.
+        
+        Args:
+            encoded_data: tuple (channel, bit_layer, mask)
+                - channel: Integer (0=R, 1=G, 2=B) indicating the updated channel.
+                - bit_layer: Integer (0-7) indicating the bit being updated.
+                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1).
+        
+        Returns:
+            np.ndarray: Updated persistent frame with the new bit layer applied.
+        """
+        channel, bit_layer, mask = encoded_data
+        assert mask.shape == (480, 640) and mask.dtype == np.uint8, "Mask must be 480x640 uint8"
+        assert 0 <= channel <= 2, "Channel must be 0, 1, or 2"
+        assert 0 <= bit_layer <= 7, "Bit layer must be between 0 and 7"
+        
+        # Compute bit_mask as uint8
+        bit_mask = np.uint8(~(1 << bit_layer))  # e.g., for bit 2: ~0b100 = 0b11111011 = 251
+        
+        # Clear the specified bit layer in the chosen channel
+        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+            self.bit_depth_resolve_persistent_frame[:, :, channel] & bit_mask
+        ).astype(np.uint8)
+        
+        # Set the new bit layer
+        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+            self.bit_depth_resolve_persistent_frame[:, :, channel] | (mask << bit_layer)
+        ).astype(np.uint8)
+        
+        return self.bit_depth_resolve_persistent_frame.copy()
+    
+    def encode_bit_depth_resolve(self, frame):
+        """
+        Encode the frame by selecting the most changed bit layer for each RGB channel,
+        building a 3-channel update map, and transmitting only the most changed channel's mask.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            tuple: (update_map, bit_layers, channel, mask)
+                - update_map: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) for R, G, B.
+                - bit_layers: np.ndarray of shape (3,) with integers (0-7) for R, G, B bit layers.
+                - channel: Integer (0=R, 1=G, 2=B) indicating the most changed channel transmitted.
+                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1) for the chosen channel.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        # Initialize arrays
+        changes = np.zeros((3, 8), dtype=np.int32)  # [channel, bit] → number of differing bits
+        bit_layers = np.zeros(3, dtype=np.uint8)    # Chosen bit layer for R, G, B
+        update_map = np.zeros((480, 640, 3), dtype=np.uint8)  # 1-bit update map
+        
+        # Compute changes and select the most changed bit layer per channel
+        for channel in range(3):  # R, G, B
+            current_bits = self.bit_depth_resolve_persistent_frame[:, :, channel]
+            new_bits = frame[:, :, channel]
+            for bit in range(8):
+                current_mask = (current_bits >> bit) & 1
+                new_mask = (new_bits >> bit) & 1
+                changes[channel, bit] = np.sum(current_mask != new_mask)
+            bit_layers[channel] = np.argmax(changes[channel])  # Most changed bit for this channel
+            update_map[:, :, channel] = (new_bits >> bit_layers[channel]) & 1  # Update map for this channel
+        
+        # Find the channel with the most changes at its selected bit layer
+        channel_changes = changes[np.arange(3), bit_layers]  # Changes for each channel’s chosen bit
+        channel = np.argmax(channel_changes)  # Channel with the most changes
+        mask = update_map[:, :, channel]  # Mask for the most changed channel
+        
+        return update_map, bit_layers, channel, mask
+    
+    def decode_bit_depth_resolve(self, encoded_data):
+        """
+        Decode the bit layer for the specified channel into the persistent frame.
+        
+        Args:
+            encoded_data: tuple (update_map, bit_layers, channel, mask)
+                - update_map: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) (ignored here).
+                - bit_layers: np.ndarray of shape (3,) with integers (0-7) for R, G, B bit layers.
+                - channel: Integer (0=R, 1=G, 2=B) indicating the updated channel.
+                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1).
+        
+        Returns:
+            np.ndarray: Updated persistent frame with the new bit layer applied.
+        """
+        _, bit_layers, channel, mask = encoded_data
+        assert mask.shape == (480, 640) and mask.dtype == np.uint8, "Mask must be 480x640 uint8"
+        assert 0 <= channel <= 2, "Channel must be 0, 1, or 2"
+        bit_layer = bit_layers[channel]
+        assert 0 <= bit_layer <= 7, "Bit layer must be between 0 and 7"
+        
+        # Compute bit_mask as uint8
+        bit_mask = np.uint8(~(1 << bit_layer))
+        
+        # Clear the specified bit layer in the chosen channel
+        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+            self.bit_depth_resolve_persistent_frame[:, :, channel] & bit_mask
+        ).astype(np.uint8)
+        
+        # Set the new bit layer
+        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+            self.bit_depth_resolve_persistent_frame[:, :, channel] | (mask << bit_layer)
+        ).astype(np.uint8)
+        
+        return self.bit_depth_resolve_persistent_frame.copy()
+    
+    def transformer_bit_depth_resolve(self, frame):
+        """
+        Transform the frame by updating the bit layer with the most changes for one RGB channel.
+        
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+        
+        Returns:
+            np.ndarray: Updated frame with the selected bit layer applied.
+        """
+        if not hasattr(self, 'bit_depth_resolve_persistent_frame'):
+            self.bit_depth_resolve_persistent_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        encoded_data = self.encode_bit_depth_resolve(frame)
+        output_frame = self.decode_bit_depth_resolve(encoded_data)
+        
+        return output_frame
     
     def transformer_h265_lowbitrate(self, frame):
         # Ensure frame is in uint8 format
