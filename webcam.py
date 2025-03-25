@@ -13,6 +13,33 @@ import random
 import subprocess
 from sympy import factorint, primerange
 
+def factor_segment(segment_data, segment_size, prime_index):
+    """
+    Factors a segment into its prime factorization.
+    Returns: Dictionary of {prime_idx: exponent}.
+    """
+    N = 0
+    for i, byte in enumerate(segment_data):
+        N += byte * (256 ** (segment_size - 1 - i))
+    factors = factorint(N)
+    segment_factors = {}
+    for prime, exponent in factors.items():
+        if prime in prime_index:
+            prime_idx = prime_index[prime]
+            segment_factors[prime_idx] = exponent
+    return segment_factors
+
+def process_segment_task(task):
+    """
+    Process a single task for prime factor row encoding.
+    Args:
+        task: Tuple of (segment_data, segment_size, prime_index, channel, row, seg_idx)
+    Returns:
+        Tuple of (segment_factors, channel, row, seg_idx)
+    """
+    segment_data, segment_size, prime_index, channel, row, seg_idx = task
+    return (factor_segment(segment_data, segment_size, prime_index), channel, row, seg_idx)
+
 # Mondrian palette definition
 MONDRIAN_PALETTE_BASE = np.array([
     [227, 66, 52],    # Mondrian Red
@@ -1095,49 +1122,6 @@ class VideoApp:
         
         return updated_mask, new_values
     
-    def encode_variable_exponent(self, exponent):
-        """
-        Encodes an exponent using variable-bit encoding.
-        - 1 bit: 0 if exponent is 1, 1 if >1.
-        - If >1, additional bits to encode the exponent.
-        Returns: (encoded_bits, num_bits)
-        """
-        if exponent == 1:
-            return [0], 1
-        else:
-            bits = bin(exponent)[2:]
-            return [1] + [int(b) for b in bits], 1 + len(bits)
-
-    def decode_variable_exponent(self, bits):
-        """
-        Decodes a variable-bit exponent.
-        Returns: (exponent, num_bits_consumed)
-        """
-        if bits[0] == 0:
-            return 1, 1
-        else:
-            remaining_bits = bits[1:]
-            exponent = int(''.join(map(str, remaining_bits)), 2)
-            return exponent, 1 + len(remaining_bits)
-        
-    def factor_segment(self, segment_data, segment_size, prime_index):
-        """
-        Factors a segment into its prime factorization.
-        Returns: Dictionary of {prime_idx: exponent}.
-        """
-        N = 0
-        for i, byte in enumerate(segment_data):
-            N += byte * (256 ** (segment_size - 1 - i))
-        
-        factors = factorint(N)
-        segment_factors = {}
-        for prime, exponent in factors.items():
-            if prime in prime_index:
-                prime_idx = prime_index[prime]
-                segment_factors[prime_idx] = exponent
-        
-        return segment_factors
-        
     def factor_row(self, row_data, width, prime_index):
         """
         Factors a single row of data into its prime factorization.
@@ -1213,56 +1197,96 @@ class VideoApp:
         """
         Encodes each row of each channel by factoring segments and combining factorizations.
         Args:
-        - frame: Input frame (height, width, 3).
-        - segment_size: Number of bytes per segment (default 16).
+            frame: Input frame (height, width, 3).
+            segment_size: Number of bytes per segment (default 16).
         Returns:
-        - combined_factorizations: List of factorizations per channel and row.
+            combined_factorizations: List of factorizations per channel and row.
         """
         frame = frame.astype(np.uint8)
         height, width, _ = frame.shape
-        segments_per_row = width // segment_size  # 640 / 16 = 40
+        segments_per_row = width // segment_size  # e.g., 640 / 16 = 40
         
         # Prepare tasks for parallel processing
         tasks = []
         for channel in range(3):
             for row in range(height):
-                for seg in range(segments_per_row):
-                    start = seg * segment_size
+                for seg_idx in range(segments_per_row):
+                    start = seg_idx * segment_size
                     end = start + segment_size
                     segment_data = frame[row, start:end, channel]
-                    tasks.append((segment_data, segment_size, self.prime_index, channel, row, seg))
+                    tasks.append((segment_data, segment_size, self.prime_index, channel, row, seg_idx))
         
         # Process all segments in parallel
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            results = list(executor.map(lambda t: (self.factor_segment(t[0], t[1], t[2]), t[3], t[4], t[5]), tasks))
+            results = list(executor.map(process_segment_task, tasks))
         
-        # Combine factorizations for each row
-        factorizations = [[[{} for _ in range(segments_per_row)] for _ in range(height)] for _ in range(3)]
-        for segment_factors, channel, row, seg in results:
-            factorizations[channel][row][seg] = segment_factors
-        
-        # Combine exponents for each row
-        combined_factorizations = [[[] for _ in range(height)] for _ in range(3)]
-        for channel in range(3):
-            for row in range(height):
-                # Combine exponents across all segments in the row
-                combined_exponents = {}
-                for seg in range(segments_per_row):
-                    segment_factors = factorizations[channel][row][seg]
-                    for prime_idx, exponent in segment_factors.items():
-                        combined_exponents[prime_idx] = combined_exponents.get(prime_idx, 0) + exponent
-                
-                # Encode the combined factorization
-                row_factors = []
-                for prime_idx, exponent in sorted(combined_exponents.items()):
-                    idx_bits = [int(b) for b in format(prime_idx, '08b')]
-                    exp_bits, _ = self.encode_variable_exponent(exponent)
-                    row_factors.append((idx_bits, exp_bits))
-                
-                combined_factorizations[channel][row] = row_factors
+        # Organize results into combined_factorizations[channel][row][seg_idx]
+        combined_factorizations = [[[None] * segments_per_row for _ in range(height)] for _ in range(3)]
+        for segment_factors, channel, row, seg_idx in results:
+            combined_factorizations[channel][row][seg_idx] = segment_factors
         
         return combined_factorizations
     
+    def decode_prime_factor_row(self, factorizations, height, width, segment_size=16):
+        """
+        Decodes the factorizations back into a frame.
+        """
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        segments_per_row = width // segment_size
+        
+        for channel in range(3):
+            for row in range(height):
+                row_factors = factorizations[channel][row]
+                
+                # Reconstruct the big integer for the entire row
+                N = 1
+                for idx_bits, exp_bits in row_factors:
+                    prime_idx = int(''.join(map(str, idx_bits)), 2)
+                    prime = self.prime_list[prime_idx]
+                    exponent, _ = self.decode_variable_exponent(exp_bits)
+                    N *= prime ** exponent
+                
+                # Convert the big integer back to bytes
+                row_data = []
+                temp_N = N
+                for i in range(width):
+                    byte = temp_N % 256
+                    row_data.append(byte)
+                    temp_N //= 256
+                row_data = row_data[::-1]
+                
+                if len(row_data) < width:
+                    row_data = [0] * (width - len(row_data)) + row_data
+                frame[row, :, channel] = row_data
+        
+        self.persistent_prime_factor = frame
+        return self.persistent_prime_factor
+    
+    def encode_variable_exponent(self, exponent):
+        """
+        Encodes an exponent using variable-bit encoding.
+        - 1 bit: 0 if exponent is 1, 1 if >1.
+        - If >1, additional bits to encode the exponent.
+        Returns: (encoded_bits, num_bits)
+        """
+        if exponent == 1:
+            return [0], 1
+        else:
+            bits = bin(exponent)[2:]
+            return [1] + [int(b) for b in bits], 1 + len(bits)
+
+    def decode_variable_exponent(self, bits):
+        """
+        Decodes a variable-bit exponent.
+        Returns: (exponent, num_bits_consumed)
+        """
+        if bits[0] == 0:
+            return 1, 1
+        else:
+            remaining_bits = bits[1:]
+            exponent = int(''.join(map(str, remaining_bits)), 2)
+            return exponent, 1 + len(remaining_bits)
+        
     def factor_8bit(self, value, prime_index):
         """
         Factors an 8-bit number and returns its prime factor signature and factorization.
@@ -1422,41 +1446,6 @@ class VideoApp:
     #         factorizations.append(channel_factorizations)
         
     #     return factorizations
-
-    def decode_prime_factor_row(self, factorizations, height, width, segment_size=16):
-        """
-        Decodes the factorizations back into a frame.
-        """
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        segments_per_row = width // segment_size
-        
-        for channel in range(3):
-            for row in range(height):
-                row_factors = factorizations[channel][row]
-                
-                # Reconstruct the big integer for the entire row
-                N = 1
-                for idx_bits, exp_bits in row_factors:
-                    prime_idx = int(''.join(map(str, idx_bits)), 2)
-                    prime = self.prime_list[prime_idx]
-                    exponent, _ = self.decode_variable_exponent(exp_bits)
-                    N *= prime ** exponent
-                
-                # Convert the big integer back to bytes
-                row_data = []
-                temp_N = N
-                for i in range(width):
-                    byte = temp_N % 256
-                    row_data.append(byte)
-                    temp_N //= 256
-                row_data = row_data[::-1]
-                
-                if len(row_data) < width:
-                    row_data = [0] * (width - len(row_data)) + row_data
-                frame[row, :, channel] = row_data
-        
-        self.persistent_prime_factor = frame
-        return self.persistent_prime_factor
 
     # def decode_prime_factor_row(self, factorizations, height, width):
     #     """
