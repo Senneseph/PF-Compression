@@ -2291,35 +2291,32 @@ class VideoApp:
         assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
         
         tile_size = 32
-        num_tiles_y, num_tiles_x = 15, 20  # 480/32, 640/32
+        num_tiles_y, num_tiles_x = 15, 20
         
         ref_colors = np.zeros((num_tiles_y, num_tiles_x, 3), dtype=np.uint8)
-        adjustments = np.zeros((num_tiles_y, num_tiles_x, 8), dtype=np.uint8)  # 8 neighbors
+        adjustments = np.zeros((num_tiles_y, num_tiles_x, 8), dtype=np.uint8)
         
-        # Neighbor offsets (in tile coordinates)
         neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
         
         for ty in range(num_tiles_y):
             for tx in range(num_tiles_x):
-                # Extract tile
                 y_start = ty * tile_size
                 x_start = tx * tile_size
                 tile = frame[y_start:y_start + tile_size, x_start:x_start + tile_size, :]
                 
-                # Reference color: center pixel
                 ref_color = tile[tile_size // 2, tile_size // 2, :]
                 ref_colors[ty, tx] = ref_color
                 
-                # Compute adjustments
                 for n_idx, (dy, dx) in enumerate(neighbor_offsets):
                     ny, nx = ty + dy, tx + dx
                     if 0 <= ny < num_tiles_y and 0 <= nx < num_tiles_x:
                         neighbor_ref = ref_colors[ny, nx]
                         diff = (neighbor_ref.astype(np.int16) - ref_color.astype(np.int16))
-                        adjustment = np.clip(np.mean(diff) // 16, -8, 7) + 8  # Average across channels
+                        # Compute a single adjustment by averaging the difference across channels
+                        adjustment = np.clip(np.mean(diff) // 16, -8, 7) + 8
                         adjustments[ty, tx, n_idx] = adjustment.astype(np.uint8)
                     else:
-                        adjustments[ty, tx, n_idx] = 8  # Neutral (no shift) for edges
+                        adjustments[ty, tx, n_idx] = 8
         
         return ref_colors, adjustments
     
@@ -2329,8 +2326,6 @@ class VideoApp:
 
         Args:
             encoded_data: tuple (ref_colors, adjustments)
-                - ref_colors: np.ndarray (15, 20, 3), uint8.
-                - adjustments: np.ndarray (15, 20, 8), uint8.
 
         Returns:
             np.ndarray: Reconstructed frame (480, 640, 3), uint8.
@@ -2345,25 +2340,22 @@ class VideoApp:
         for ty in range(num_tiles_y):
             for tx in range(num_tiles_x):
                 ref_color = ref_colors[ty, tx].astype(np.float32)
-                adj = adjustments[ty, tx].astype(np.int16) - 8  # Map 0-15 back to -8 to 7
+                adj = adjustments[ty, tx].astype(np.int16) - 8
+                influences = adj * 16
                 
-                # Compute neighbor influences
-                influences = adj * 16  # Scale back to color difference
-                
-                # Fill tile with gradient
                 for y in range(tile_size):
                     for x in range(tile_size):
                         pos_y = ty * tile_size + y
                         pos_x = tx * tile_size + x
                         color = ref_color.copy()
                         
-                        # Apply neighbor influences with inverse distance weighting
                         for n_idx, (dy, dx) in enumerate(neighbor_offsets):
                             dist_y = (y - tile_size // 2) - dy * tile_size
                             dist_x = (x - tile_size // 2) - dx * tile_size
                             dist = np.sqrt(dist_y**2 + dist_x**2)
                             if dist > 0 and 0 <= ty + dy < num_tiles_y and 0 <= tx + dx < num_tiles_x:
                                 weight = 1 / (dist + 1)
+                                # Apply the scalar influence to all channels
                                 color += influences[n_idx] * weight
                         
                         output_frame[pos_y, pos_x] = color
