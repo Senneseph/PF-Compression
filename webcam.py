@@ -797,41 +797,53 @@ class VideoApp:
         frame_float = frame.astype(np.float32) / 255.0
         
         # Adjust temperature (warm shift) and tint
-        # Simple approximation: increase red, slightly decrease blue
-        frame_float[:, :, 2] *= 1.05  # Boost red channel (BGR order in OpenCV)
-        frame_float[:, :, 0] *= 0.95  # Reduce blue channel
-        frame_float = np.clip(frame_float, 0, 1)
+        frame_float[:, :, 1] *= 0.95  # Normalize green channel
+        frame_float[:, :, 2] *= 0.9975  # Boost red channel (wrt green)
+        frame_float[:, :, 0] *= 0.9025  # Reduce blue channel (wrt green)
+        # frame_float = np.clip(frame_float, 0, 1)
         
         # Desaturate overall, but boost reds and yellows
         frame_hsv = cv2.cvtColor(frame_float, cv2.COLOR_BGR2HSV)
         frame_hsv[:, :, 1] *= 0.85  # Reduce saturation by 15%
-        # Boost saturation for reds (hue 0-30, 330-360) and yellows (hue 30-60)
         mask_red = ((frame_hsv[:, :, 0] <= 30) | (frame_hsv[:, :, 0] >= 330)) | \
                 ((frame_hsv[:, :, 0] >= 30) & (frame_hsv[:, :, 0] <= 60))
         frame_hsv[mask_red, 1] *= 1.2  # Increase saturation for reds and yellows
         frame_float = cv2.cvtColor(frame_hsv, cv2.COLOR_HSV2BGR)
         
         # Split toning: golden highlights, greenish shadows
-        highlights = frame_float > 0.7
-        shadows = frame_float < 0.3
-        frame_float[highlights] = frame_float[highlights] * 0.8 + np.array([200/255, 245/255, 255/255]) * 0.2
-        frame_float[shadows] = frame_float[shadows] * 0.9 + np.array([205/255, 210/255, 200/255]) * 0.1
+        # Create masks for highlights and shadows
+        highlights = frame_float > 0.7  # Shape: (height, width, 3)
+        shadows = frame_float < 0.3     # Shape: (height, width, 3)
+        
+        # Define the tint colors
+        highlight_tint = np.array([200/255, 245/255, 255/255], dtype=np.float32)  # Golden
+        shadow_tint = np.array([205/255, 210/255, 200/255], dtype=np.float32)    # Greenish
+        
+        # Blend the tints using the masks
+        # For highlights: lerp between original and tint
+        frame_float = np.where(
+            highlights,
+            frame_float * 0.8 + highlight_tint * 0.2,  # Broadcasting (3,) to (height, width, 3)
+            frame_float
+        )
+        # For shadows: lerp between original and tint
+        frame_float = np.where(
+            shadows,
+            frame_float * 0.9 + shadow_tint * 0.1,  # Broadcasting (3,) to (height, width, 3)
+            frame_float
+        )
         
         # Increase contrast and crush blacks
         frame_float = (frame_float - 0.1) * 1.5  # Shift and scale for higher contrast
         frame_float = np.clip(frame_float, 0, 1)
         
         # Step 2: Apply LUT (Placeholder)
-        # In practice, export the above color adjustments as a 3D LUT (.cube) using DaVinci Resolve
-        # Then apply the LUT here using a LUT application function (e.g., cv2.LUT or a custom function)
-        # For now, we proceed with the adjusted frame
         frame_adjusted = (frame_float * 255).astype(np.uint8)
         
         # Step 3: Emulate Lens Softness
         frame_soft = cv2.GaussianBlur(frame_adjusted, (5, 5), sigmaX=0.5)
         
         # Step 4: Bloom Effect for Highlights
-        # Isolate highlights
         gray = cv2.cvtColor(frame_adjusted, cv2.COLOR_BGR2GRAY)
         highlights = gray > 200
         bloom = cv2.GaussianBlur(frame_adjusted.astype(np.float32), (15, 15), sigmaX=2.0)
