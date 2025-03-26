@@ -523,6 +523,7 @@ class VideoApp:
             "Retro Flashy": self.transformer_retro_flashy,
             "Interlaced (Horizontal)": self.transformer_interlaced_h,
             "Interlaced (Vertical)": self.transformer_interlaced_v,
+            "Interlaced Temporal (Horizontal)": self.transformer_interlaced_h_temporal,
             "Cybergrid": self.transformer_cybergrid,
             "MacroBlast": self.transformer_macroblast,
             "Tile-Cycle": self.transformer_tilecycle,
@@ -718,6 +719,7 @@ class VideoApp:
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
 
+    # This is for Mondrian stuff, I think.
     def find_complexity_points(self, frame, num_points=375):
         """Identify points of high complexity across the image."""
         h, w, _ = frame.shape
@@ -4328,6 +4330,71 @@ class VideoApp:
         encoded_data = self.encode_interlaced_v(frame)
 
         return self.decode_interlaced_v(encoded_data)
+    
+    def encode_interlaced_h_temporal(self, frame):
+        """
+        Encode a frame for horizontal temporal interlacing by selecting rows based on phase.
+
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+
+        Returns:
+            tuple: (rows_data, phase, height)
+                - rows_data: np.ndarray of the selected rows.
+                - phase: int, current phase (0-3).
+                - height: int, frame height.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        if not hasattr(self, 'interlaced_h_temporal_phase'):
+            self.interlaced_h_temporal_phase = 0
+        
+        # Increment phase (0, 1, 2, 3, 0, ...)
+        self.interlaced_h_temporal_phase = (self.interlaced_h_temporal_phase + 1) % 4
+        phase = self.interlaced_h_temporal_phase
+        height = frame.shape[0]
+        
+        # Select rows for the current phase (e.g., phase 0: rows 0, 4, 8, ...)
+        rows_data = frame[phase:height:4, :, :].copy()
+        
+        return rows_data, phase, height
+    
+    def decode_interlaced_h_temporal(self, encoded_data):
+        """
+        Decode the interlaced data by updating rows based on the phase.
+
+        Args:
+            encoded_data: tuple (rows_data, phase, height)
+
+        Returns:
+            np.ndarray: Updated frame (480, 640, 3), uint8.
+        """
+        rows_data, phase, height = encoded_data
+        
+        if not hasattr(self, 'interlaced_h_temporal_last_frame'):
+            self.interlaced_h_temporal_last_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        output_frame = self.interlaced_h_temporal_last_frame.copy()
+        output_frame[phase:height:4, :, :] = rows_data
+        
+        self.interlaced_h_temporal_last_frame = output_frame.copy()
+        return output_frame
+    
+    def transformer_interlaced_h_temporal(self, frame):
+        """
+        Transform a frame using horizontal temporal interlacing (row-based, 4 phases at 120 Hz).
+
+        Args:
+            frame: np.ndarray (480, 640, 3) or (480, 640), uint8.
+
+        Returns:
+            np.ndarray: Interlaced frame (480, 640, 3), uint8.
+        """
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        
+        encoded_data = self.encode_interlaced_h_temporal(frame)
+        return self.decode_interlaced_h_temporal(encoded_data)
     
     def transformer_magic_area(self, frame, cell_size=32, num_magic_areas=16, operations=None):
         """
