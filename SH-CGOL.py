@@ -38,36 +38,67 @@ for i in range(6):
 batch = pyglet.graphics.Batch()
 vertex_lists = []  # To store vertex lists for updating
 
-# Get the default shader program
-shader_program = pyglet.graphics.get_default_shader()
+# Define a custom shader that only uses vertex colors
+vertex_source = """#version 330 core
+in vec2 position;
+in vec3 colors;
+out vec3 vertex_colors;
 
-# Define vertex attributes for the hex grid, matching the default shader
+uniform WindowBlock
+{
+    mat4 projection;
+    mat4 view;
+} window;
+
+void main()
+{
+    gl_Position = window.projection * window.view * vec4(position, 0.0, 1.0);
+    vertex_colors = colors;
+}
+"""
+
+fragment_source = """#version 330 core
+in vec3 vertex_colors;
+out vec4 final_colors;
+
+void main()
+{
+    final_colors = vec4(vertex_colors, 1.0);
+}
+"""
+
+# Create the shader program
+vertex_shader = pyglet.graphics.shader.Shader(vertex_source, 'vertex')
+fragment_shader = pyglet.graphics.shader.Shader(fragment_source, 'fragment')
+shader_program = pyglet.graphics.shader.ShaderProgram(vertex_shader, fragment_shader)
+
+# Define vertex attributes for the hex grid, matching the custom shader
 attributes = {
     'position': {
         'location': shader_program.attributes['position']['location'],
         'format': 'f',
         'count': 2,
-        'normalize': False,  # Floats don't need normalization
-        'instance': False    # Not instanced
+        'normalize': False,
+        'instance': False
     },
     'colors': {
         'location': shader_program.attributes['colors']['location'],
         'format': 'B',
         'count': 3,
-        'normalize': True,   # Colors need to be normalized (0-255 to 0.0-1.0)
-        'instance': False    # Not instanced
+        'normalize': True,
+        'instance': False
     }
 }
 
 # Create a group with the shader program
 group = pyglet.graphics.ShaderGroup(shader_program, order=0, parent=None)
 
-# Get a vertex domain from the batch
+# Get a vertex domain from the batch, using GL_LINES
 domain = batch.get_domain(
-    indexed=False,      # No indices for a line loop
+    indexed=False,      # No indices
     instanced=False,    # No instancing
-    mode=pyglet.gl.GL_LINE_LOOP,
-    group=group,       # Use the shader group
+    mode=pyglet.gl.GL_LINES,  # Use GL_LINES instead of GL_LINE_LOOP
+    group=group,
     attributes=attributes
 )
 
@@ -124,15 +155,23 @@ def on_draw():
             # Apply color from palette (cycle through colors)
             color = colors[(row + col) % len(colors)]
             
-            # Create vertex list for this hex
+            # Create vertex list for this hex using GL_LINES
+            # For a hex with vertices A, B, C, D, E, F, we need 6 line segments:
+            # A-B, B-C, C-D, D-E, E-F, F-A, which requires 12 vertices
             vertices = []
-            for i in range(0, len(hex_vertices), 2):
-                vertices.extend([screen_x + hex_vertices[i], screen_y + hex_vertices[i + 1]])
+            for i in range(6):
+                # Get the current vertex and the next one (wrapping around)
+                v1_x = screen_x + hex_vertices[i * 2]
+                v1_y = screen_y + hex_vertices[i * 2 + 1]
+                v2_x = screen_x + hex_vertices[(i * 2 + 2) % 12]
+                v2_y = screen_y + hex_vertices[(i * 2 + 3) % 12]
+                # Add the line segment (v1 to v2)
+                vertices.extend([v1_x, v1_y, v2_x, v2_y])
             
-            # Create a vertex list in the domain
-            vlist = domain.create(6)  # 6 vertices for a hex
+            # Create a vertex list in the domain (12 vertices for 6 line segments)
+            vlist = domain.create(12)
             vlist.position[:] = vertices
-            vlist.colors[:] = color * 6  # Repeat color for each vertex
+            vlist.colors[:] = color * 12  # Repeat color for each vertex
             vertex_lists.append(vlist)
     
     # Draw the batch
