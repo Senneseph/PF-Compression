@@ -530,6 +530,7 @@ class VideoApp:
             "Magic Area": self.transformer_magic_area,
             "Prime RGB": self.transformer_prime_rgb,
             "Fibonacci RGB": self.transformer_fibonacci_rgb,
+            "Gradient Tiles": self.transformer_gradient_tiles,
             "Mondrian": self.transformer_mondrian,
             "Mondrian 2": self.transformer_mondrian_2,
             "Mondrian Next": self.transformer_mondrian_next,
@@ -2275,6 +2276,114 @@ class VideoApp:
 
         return mondrian_frame
     
+    def encode_gradient_tiles(self, frame):
+        """
+        Encode a frame into reference colors and neighbor adjustments for 32x32 tiles.
+
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+
+        Returns:
+            tuple: (ref_colors, adjustments)
+                - ref_colors: np.ndarray (15, 20, 3), uint8, reference colors per tile.
+                - adjustments: np.ndarray (15, 20, 8), uint8, 4-bit adjustments per neighbor.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        tile_size = 32
+        num_tiles_y, num_tiles_x = 15, 20  # 480/32, 640/32
+        
+        ref_colors = np.zeros((num_tiles_y, num_tiles_x, 3), dtype=np.uint8)
+        adjustments = np.zeros((num_tiles_y, num_tiles_x, 8), dtype=np.uint8)  # 8 neighbors
+        
+        # Neighbor offsets (in tile coordinates)
+        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        
+        for ty in range(num_tiles_y):
+            for tx in range(num_tiles_x):
+                # Extract tile
+                y_start = ty * tile_size
+                x_start = tx * tile_size
+                tile = frame[y_start:y_start + tile_size, x_start:x_start + tile_size, :]
+                
+                # Reference color: center pixel
+                ref_color = tile[tile_size // 2, tile_size // 2, :]
+                ref_colors[ty, tx] = ref_color
+                
+                # Compute adjustments
+                for n_idx, (dy, dx) in enumerate(neighbor_offsets):
+                    ny, nx = ty + dy, tx + dx
+                    if 0 <= ny < num_tiles_y and 0 <= nx < num_tiles_x:
+                        neighbor_ref = ref_colors[ny, nx]
+                        diff = (neighbor_ref.astype(np.int16) - ref_color.astype(np.int16))
+                        adjustment = np.clip(np.mean(diff) // 16, -8, 7) + 8  # Average across channels
+                        adjustments[ty, tx, n_idx] = adjustment.astype(np.uint8)
+                    else:
+                        adjustments[ty, tx, n_idx] = 8  # Neutral (no shift) for edges
+        
+        return ref_colors, adjustments
+    
+    def decode_gradient_tiles(self, encoded_data):
+        """
+        Decode reference colors and adjustments into a full frame.
+
+        Args:
+            encoded_data: tuple (ref_colors, adjustments)
+                - ref_colors: np.ndarray (15, 20, 3), uint8.
+                - adjustments: np.ndarray (15, 20, 8), uint8.
+
+        Returns:
+            np.ndarray: Reconstructed frame (480, 640, 3), uint8.
+        """
+        ref_colors, adjustments = encoded_data
+        tile_size = 32
+        num_tiles_y, num_tiles_x = 15, 20
+        
+        output_frame = np.zeros((480, 640, 3), dtype=np.float32)
+        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        
+        for ty in range(num_tiles_y):
+            for tx in range(num_tiles_x):
+                ref_color = ref_colors[ty, tx].astype(np.float32)
+                adj = adjustments[ty, tx].astype(np.int16) - 8  # Map 0-15 back to -8 to 7
+                
+                # Compute neighbor influences
+                influences = adj * 16  # Scale back to color difference
+                
+                # Fill tile with gradient
+                for y in range(tile_size):
+                    for x in range(tile_size):
+                        pos_y = ty * tile_size + y
+                        pos_x = tx * tile_size + x
+                        color = ref_color.copy()
+                        
+                        # Apply neighbor influences with inverse distance weighting
+                        for n_idx, (dy, dx) in enumerate(neighbor_offsets):
+                            dist_y = (y - tile_size // 2) - dy * tile_size
+                            dist_x = (x - tile_size // 2) - dx * tile_size
+                            dist = np.sqrt(dist_y**2 + dist_x**2)
+                            if dist > 0 and 0 <= ty + dy < num_tiles_y and 0 <= tx + dx < num_tiles_x:
+                                weight = 1 / (dist + 1)
+                                color += influences[n_idx] * weight
+                        
+                        output_frame[pos_y, pos_x] = color
+        
+        return np.clip(output_frame, 0, 255).astype(np.uint8)
+    
+    def transformer_gradient_tiles(self, frame):
+        """
+        Transform a frame using gradient tiles encoding and decoding.
+
+        Args:
+            frame: np.ndarray (480, 640, 3), uint8.
+
+        Returns:
+            np.ndarray: Reconstructed frame (480, 640, 3), uint8.
+        """
+        encoded_data = self.encode_gradient_tiles(frame)
+
+        return self.decode_gradient_tiles(encoded_data)
+    
     def get_diagonal_indices(self, start_x, start_y, width, height):
         """Compute the indices of a diagonal starting at (start_x, start_y) with wrapping."""
         indices = []
@@ -3384,8 +3493,8 @@ class VideoApp:
         assert mask.shape == (480, 640, 3) and mask.dtype == np.uint8, "Mask must be 480x640x3 uint8"
         assert 0 <= bit_layer <= 7, "Bit layer must be between 0 and 7"
         
-        # Compute bit_mask as uint8
-        bit_mask = np.uint8(~(1 << bit_layer))  # e.g., for bit 2: ~0b100 = 0b11111011 = 251
+        # Compute bit_mask directly in uint8 to avoid deprecation warning
+        bit_mask = (~np.uint8(1 << bit_layer)).astype(np.uint8)  # e.g., ~0b100 = 0b11111011 = 251
         
         # Clear the current bit layer in the persistent frame
         self.bit_depth_strobe_persistent_frame = (
@@ -3398,8 +3507,6 @@ class VideoApp:
         ).astype(np.uint8)
         
         return self.bit_depth_strobe_persistent_frame.copy()
-    
-
     
     def transformer_bit_depth_resolve_prototype(self, frame):
         """
@@ -3493,95 +3600,108 @@ class VideoApp:
     
     def encode_bit_depth_resolve(self, frame):
         """
-        Encode the frame by selecting the most changed bit layer for each RGB channel,
-        building a 3-channel update map, and transmitting only the most changed channel's mask.
+        Encode the frame by selecting the bit layer for each RGB channel with the most
+        perceptually significant changes compared to the previous original frame.
         
         Args:
             frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
         
         Returns:
-            tuple: (update_map, bit_layers, channel, mask)
+            tuple: (update_map, bit_layers)
                 - update_map: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) for R, G, B.
                 - bit_layers: np.ndarray of shape (3,) with integers (0-7) for R, G, B bit layers.
-                - channel: Integer (0=R, 1=G, 2=B) indicating the most changed channel transmitted.
-                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1) for the chosen channel.
         """
         assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
         
+        # Use zeros for the first frame if no previous frame exists
+        prev_frame = (self.bit_depth_resolve_prev_frame if self.bit_depth_resolve_prev_frame is not None 
+                    else np.zeros((480, 640, 3), dtype=np.uint8))
+        
         # Initialize arrays
         changes = np.zeros((3, 8), dtype=np.int32)  # [channel, bit] → number of differing bits
+        weighted_changes = np.zeros((3, 8), dtype=np.float32)  # Weighted by bit significance
         bit_layers = np.zeros(3, dtype=np.uint8)    # Chosen bit layer for R, G, B
         update_map = np.zeros((480, 640, 3), dtype=np.uint8)  # 1-bit update map
         
-        # Compute changes and select the most changed bit layer per channel
+        # Compute changes and weight them by bit significance
         for channel in range(3):  # R, G, B
-            current_bits = self.bit_depth_resolve_persistent_frame[:, :, channel]
+            prev_bits = prev_frame[:, :, channel]
             new_bits = frame[:, :, channel]
             for bit in range(8):
-                current_mask = (current_bits >> bit) & 1
+                prev_mask = (prev_bits >> bit) & 1
                 new_mask = (new_bits >> bit) & 1
-                changes[channel, bit] = np.sum(current_mask != new_mask)
-            bit_layers[channel] = np.argmax(changes[channel])  # Most changed bit for this channel
+                changes[channel, bit] = np.sum(prev_mask != new_mask)
+                # Weight by the bit's magnitude (2^bit)
+                weighted_changes[channel, bit] = changes[channel, bit] * (1 << bit)
+            bit_layers[channel] = np.argmax(weighted_changes[channel])  # Most significant changes
             update_map[:, :, channel] = (new_bits >> bit_layers[channel]) & 1  # Update map for this channel
         
-        # Find the channel with the most changes at its selected bit layer
-        channel_changes = changes[np.arange(3), bit_layers]  # Changes for each channel’s chosen bit
-        channel = np.argmax(channel_changes)  # Channel with the most changes
-        mask = update_map[:, :, channel]  # Mask for the most changed channel
-        
-        return update_map, bit_layers, channel, mask
+        return update_map, bit_layers
     
     def decode_bit_depth_resolve(self, encoded_data):
         """
-        Decode the bit layer for the specified channel into the persistent frame.
+        Decode the update map into the persistent frame for all three RGB channels.
         
         Args:
-            encoded_data: tuple (update_map, bit_layers, channel, mask)
-                - update_map: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) (ignored here).
+            encoded_data: tuple (update_map, bit_layers)
+                - update_map: np.ndarray of shape (480, 640, 3) with 1-bit values (0 or 1) for R, G, B.
                 - bit_layers: np.ndarray of shape (3,) with integers (0-7) for R, G, B bit layers.
-                - channel: Integer (0=R, 1=G, 2=B) indicating the updated channel.
-                - mask: np.ndarray of shape (480, 640) with 1-bit values (0 or 1).
         
         Returns:
-            np.ndarray: Updated persistent frame with the new bit layer applied.
+            np.ndarray: Updated persistent frame with the new bit layers applied to all channels.
         """
-        _, bit_layers, channel, mask = encoded_data
-        assert mask.shape == (480, 640) and mask.dtype == np.uint8, "Mask must be 480x640 uint8"
-        assert 0 <= channel <= 2, "Channel must be 0, 1, or 2"
-        bit_layer = bit_layers[channel]
-        assert 0 <= bit_layer <= 7, "Bit layer must be between 0 and 7"
+        update_map, bit_layers = encoded_data
+        assert update_map.shape == (480, 640, 3) and update_map.dtype == np.uint8, "Update map must be 480x640x3 uint8"
+        assert bit_layers.shape == (3,) and np.all((0 <= bit_layers) & (bit_layers <= 7)), "Bit layers must be 0-7"
         
-        # Compute bit_mask as uint8
-        bit_mask = np.uint8(~(1 << bit_layer))
-        
-        # Clear the specified bit layer in the chosen channel
-        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
-            self.bit_depth_resolve_persistent_frame[:, :, channel] & bit_mask
-        ).astype(np.uint8)
-        
-        # Set the new bit layer
-        self.bit_depth_resolve_persistent_frame[:, :, channel] = (
-            self.bit_depth_resolve_persistent_frame[:, :, channel] | (mask << bit_layer)
-        ).astype(np.uint8)
+        # Update each channel
+        for channel in range(3):
+            bit_layer = bit_layers[channel]
+            # Compute bit_mask directly in uint8 to avoid deprecation warning
+            bit_mask = (~np.uint8(1 << bit_layer)).astype(np.uint8)  # e.g., ~0b100 = 0b11111011 = 251
+            
+            # Clear the bit layer in the persistent frame
+            self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+                self.bit_depth_resolve_persistent_frame[:, :, channel] & bit_mask
+            ).astype(np.uint8)
+            
+            # Set the new bit layer from the update map
+            self.bit_depth_resolve_persistent_frame[:, :, channel] = (
+                self.bit_depth_resolve_persistent_frame[:, :, channel] | 
+                (update_map[:, :, channel] << bit_layer)
+            ).astype(np.uint8)
         
         return self.bit_depth_resolve_persistent_frame.copy()
     
     def transformer_bit_depth_resolve(self, frame):
-        """
-        Transform the frame by updating the bit layer with the most changes for one RGB channel.
-        
-        Args:
-            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
-        
-        Returns:
-            np.ndarray: Updated frame with the selected bit layer applied.
-        """
         if not hasattr(self, 'bit_depth_resolve_persistent_frame'):
             self.bit_depth_resolve_persistent_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.bit_depth_resolve_prev_frame = None
         
+        # Encode using the previous original frame for comparison
         encoded_data = self.encode_bit_depth_resolve(frame)
         output_frame = self.decode_bit_depth_resolve(encoded_data)
         
+        # # Debug output
+        # update_map, bit_layers = encoded_data
+        # # Recompute changes for debug
+        # prev_frame = (self.bit_depth_resolve_prev_frame if self.bit_depth_resolve_prev_frame is not None 
+        #             else np.zeros((480, 640, 3), dtype=np.uint8))
+        # changes = np.zeros((3, 8), dtype=np.int32)
+        # weighted_changes = np.zeros((3, 8), dtype=np.float32)
+        # for channel in range(3):
+        #     prev_bits = prev_frame[:, :, channel]
+        #     new_bits = frame[:, :, channel]
+        #     for bit in range(8):
+        #         prev_mask = (prev_bits >> bit) & 1
+        #         new_mask = (new_bits >> bit) & 1
+        #         changes[channel, bit] = np.sum(prev_mask != new_mask)
+        #         weighted_changes[channel, bit] = changes[channel, bit] * (1 << bit)
+        # print(f"R Bit {bit_layers[0]} (Raw: {changes[0, bit_layers[0]]}, Weighted: {weighted_changes[0, bit_layers[0]]}), "
+        #     f"G Bit {bit_layers[1]} (Raw: {changes[1, bit_layers[1]]}, Weighted: {weighted_changes[1, bit_layers[1]]}), "
+        #     f"B Bit {bit_layers[2]} (Raw: {changes[2, bit_layers[2]]}, Weighted: {weighted_changes[2, bit_layers[2]]})")
+        
+        self.bit_depth_resolve_prev_frame = frame.copy()
         return output_frame
     
     def transformer_h265_lowbitrate(self, frame):
