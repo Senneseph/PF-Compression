@@ -644,6 +644,10 @@ class VideoApp:
         self.pythagorean_snap_set = get_pythagorean_numbers()
         self.pythagorean_snap_persistent_frame = np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
 
+        # Initialize state for the bleeding points filter
+        self.bleed_points = []  # List of active points: (x, y, timer, width)
+        self.bleed_overlay = None  # Overlay array for the effect
+
         # Start Update Loop
         self.update()
 
@@ -729,6 +733,88 @@ class VideoApp:
         self.last_frame = None
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
+
+    def filter_bleeding_points(self, frame):
+        """
+        Apply a bleeding points filter to the frame.
+        Spawns random points anywhere on the frame that move downward, applying a color negative effect
+        to the pixels they touch. Points persist for a random number of frames (9 to 480, capped at 255
+        due to 8-bit timer).
+        
+        Args:
+            frame: np.ndarray (480, 640, 3), uint8.
+        
+        Returns:
+            np.ndarray: Filtered frame (480, 640, 3), uint8.
+        """
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        
+        height, width, _ = frame.shape  # 480x640x3
+        
+        # Initialize the overlay array if not present
+        if self.bleed_overlay is None:
+            self.bleed_overlay = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Step 1: Spawn new points (5-10 per frame) at random positions across the entire frame
+        num_new_points = random.randint(5, 10)
+        for _ in range(num_new_points):
+            x = random.randint(0, width - 1)  # Random x position (0 to 639)
+            y = random.randint(0, height - 1)  # Random y position (0 to 479)
+            timer = min(255, random.randint(9, 480))  # 8-bit timer, capped at 255
+            width = random.randint(1, 2)  # 1 or 2 pixels wide
+            self.bleed_points.append([x, y, timer, width])
+        
+        # Step 2: Update existing points and the overlay
+        # First, clear the overlay (reset to black)
+        self.bleed_overlay.fill(0)
+        
+        # Process each point
+        active_points = []
+        for point in self.bleed_points:
+            x, y, timer, point_width = point
+            
+            # Decrement the timer
+            timer -= 1
+            if timer <= 0:
+                continue  # Skip expired points
+            
+            # Move the point down by 1 or 2 pixels
+            move_distance = random.randint(1, 2)
+            y += move_distance
+            
+            # If the point moves off the bottom of the frame, skip it
+            if y >= height:
+                continue
+            
+            # Apply the color negative effect at the new position
+            # Affect 1 or 2 pixels horizontally based on point_width
+            x_start = max(0, x)
+            x_end = min(width, x + point_width)
+            for x_pos in range(x_start, x_end):
+                if 0 <= y < height and 0 <= x_pos < width:
+                    # Get the original pixel value from the incoming frame
+                    pixel = frame[y, x_pos]
+                    # Apply color negative effect: 255 - value for each channel
+                    negative_pixel = 255 - pixel
+                    # Update the overlay
+                    self.bleed_overlay[y, x_pos] = negative_pixel
+            
+            # Update the point's position and timer
+            point[1] = y
+            point[2] = timer
+            active_points.append(point)
+        
+        # Update the list of active points
+        self.bleed_points = active_points
+        
+        # Step 3: Overlay the effect onto the incoming frame
+        # Where the overlay is non-zero, use the overlay values; otherwise, use the original frame
+        output_frame = frame.copy()
+        mask = np.any(self.bleed_overlay != 0, axis=2)  # Mask where overlay is non-zero
+        output_frame[mask] = self.bleed_overlay[mask]
+        
+        return output_frame
 
     # This is for Mondrian stuff, I think.
     def find_complexity_points(self, frame, num_points=375):
