@@ -521,7 +521,8 @@ class VideoApp:
             "Retro Compression": self.transformer_retro,
             "Intermediate": self.transformer_intermediate,
             "Retro Flashy": self.transformer_retro_flashy,
-            "Interlaced": self.transformer_interlace,
+            "Interlaced (Horizontal)": self.transformer_interlaced_h,
+            "Interlaced (Vertical)": self.transformer_interlaced_v,
             "Cybergrid": self.transformer_cybergrid,
             "MacroBlast": self.transformer_macroblast,
             "Tile-Cycle": self.transformer_tilecycle,
@@ -2278,20 +2279,21 @@ class VideoApp:
     
     def encode_gradient_tiles(self, frame):
         """
-        Encode a frame into reference colors and neighbor adjustments for 32x32 tiles.
+        Encode a frame into reference colors and neighbor adjustments for 32x24 tiles.
 
         Args:
             frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
 
         Returns:
-            tuple: (ref_colors, adjustments)
-                - ref_colors: np.ndarray (15, 20, 3), uint8, reference colors per tile.
-                - adjustments: np.ndarray (15, 20, 8), uint8, 4-bit adjustments per neighbor.
+            tuple: (ref_colors, adjustments, metadata)
+                - ref_colors: np.ndarray (20, 20, 3), uint8.
+                - adjustments: np.ndarray (20, 20, 8), uint8.
+                - metadata: dict with tile_width, tile_height, num_tiles_y, num_tiles_x.
         """
         assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
         
-        tile_size = 32
-        num_tiles_y, num_tiles_x = 15, 20
+        tile_width, tile_height = 32, 24
+        num_tiles_y, num_tiles_x = 480 // tile_height, 640 // tile_width
         
         ref_colors = np.zeros((num_tiles_y, num_tiles_x, 3), dtype=np.uint8)
         adjustments = np.zeros((num_tiles_y, num_tiles_x, 8), dtype=np.uint8)
@@ -2300,11 +2302,13 @@ class VideoApp:
         
         for ty in range(num_tiles_y):
             for tx in range(num_tiles_x):
-                y_start = ty * tile_size
-                x_start = tx * tile_size
-                tile = frame[y_start:y_start + tile_size, x_start:x_start + tile_size, :]
+                y_start = ty * tile_height
+                x_start = tx * tile_width
+                tile = frame[y_start:y_start + tile_height, x_start:x_start + tile_width, :]
                 
-                ref_color = tile[tile_size // 2, tile_size // 2, :]
+                center_y, center_x = tile_height // 2, tile_width // 2
+                center_patch = tile[center_y-1:center_y+1, center_x-1:center_x+1, :]
+                ref_color = np.mean(center_patch, axis=(0, 1)).astype(np.uint8)
                 ref_colors[ty, tx] = ref_color
                 
                 for n_idx, (dy, dx) in enumerate(neighbor_offsets):
@@ -2312,69 +2316,127 @@ class VideoApp:
                     if 0 <= ny < num_tiles_y and 0 <= nx < num_tiles_x:
                         neighbor_ref = ref_colors[ny, nx]
                         diff = (neighbor_ref.astype(np.int16) - ref_color.astype(np.int16))
-                        # Compute a single adjustment by averaging the difference across channels
                         adjustment = np.clip(np.mean(diff) // 16, -8, 7) + 8
                         adjustments[ty, tx, n_idx] = adjustment.astype(np.uint8)
                     else:
                         adjustments[ty, tx, n_idx] = 8
         
-        return ref_colors, adjustments
+        metadata = {
+            'tile_width': tile_width,
+            'tile_height': tile_height,
+            'num_tiles_y': num_tiles_y,
+            'num_tiles_x': num_tiles_x
+        }
+
+        return ref_colors, adjustments, metadata
     
     def decode_gradient_tiles(self, encoded_data):
         """
-        Decode reference colors and adjustments into a full frame.
+        Decode reference colors and adjustments into a full frame with vectorized gradients.
 
         Args:
-            encoded_data: tuple (ref_colors, adjustments)
+            encoded_data: tuple (ref_colors, adjustments, metadata)
 
         Returns:
             np.ndarray: Reconstructed frame (480, 640, 3), uint8.
         """
-        ref_colors, adjustments = encoded_data
-        tile_size = 32
-        num_tiles_y, num_tiles_x = 15, 20
+        ref_colors, adjustments, _ = encoded_data  # Ignore metadata
+        tile_width, tile_height = 32, 24
+        num_tiles_y, num_tiles_x = 20, 20
         
         output_frame = np.zeros((480, 640, 3), dtype=np.float32)
         neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
         
+        y_coords, x_coords = np.indices((tile_height, tile_width))
+        y_coords = y_coords - tile_height // 2
+        x_coords = x_coords - tile_width // 2
+        weights = np.zeros((tile_height, tile_width, 8), dtype=np.float32)
+        for n_idx, (dy, dx) in enumerate(neighbor_offsets):
+            dist_y = y_coords - dy * tile_height
+            dist_x = x_coords - dx * tile_width
+            dist = np.sqrt(dist_y**2 + dist_x**2)
+            weights[:, :, n_idx] = np.where(dist > 0, 1 / (dist + 1), 0)
+        
         for ty in range(num_tiles_y):
             for tx in range(num_tiles_x):
+                y_start = ty * tile_height
+                x_start = tx * tile_width
                 ref_color = ref_colors[ty, tx].astype(np.float32)
                 adj = adjustments[ty, tx].astype(np.int16) - 8
                 influences = adj * 16
                 
-                for y in range(tile_size):
-                    for x in range(tile_size):
-                        pos_y = ty * tile_size + y
-                        pos_x = tx * tile_size + x
-                        color = ref_color.copy()
-                        
-                        for n_idx, (dy, dx) in enumerate(neighbor_offsets):
-                            dist_y = (y - tile_size // 2) - dy * tile_size
-                            dist_x = (x - tile_size // 2) - dx * tile_size
-                            dist = np.sqrt(dist_y**2 + dist_x**2)
-                            if dist > 0 and 0 <= ty + dy < num_tiles_y and 0 <= tx + dx < num_tiles_x:
-                                weight = 1 / (dist + 1)
-                                # Apply the scalar influence to all channels
-                                color += influences[n_idx] * weight
-                        
-                        output_frame[pos_y, pos_x] = color
+                tile = np.zeros((tile_height, tile_width, 3), dtype=np.float32)
+                tile += ref_color
+                
+                for n_idx, (dy, dx) in enumerate(neighbor_offsets):
+                    if 0 <= ty + dy < num_tiles_y and 0 <= tx + dx < num_tiles_x:
+                        influence = influences[n_idx]
+                        tile += influence * weights[:, :, n_idx, np.newaxis]
+                
+                output_frame[y_start:y_start + tile_height, x_start:x_start + tile_width, :] = tile
         
         return np.clip(output_frame, 0, 255).astype(np.uint8)
     
     def transformer_gradient_tiles(self, frame):
         """
-        Transform a frame using gradient tiles encoding and decoding.
+        Transform a frame using gradient tiles encoding and decoding, with analytics overlaid on the frame.
 
         Args:
             frame: np.ndarray (480, 640, 3), uint8.
 
         Returns:
-            np.ndarray: Reconstructed frame (480, 640, 3), uint8.
+            np.ndarray: Reconstructed frame (480, 640, 3), uint8, with analytics text.
         """
+        # Encode the frame
         encoded_data = self.encode_gradient_tiles(frame)
-
-        return self.decode_gradient_tiles(encoded_data)
+        ref_colors, adjustments, metadata = encoded_data
+        
+        # Compute analytics
+        tile_area = f"{metadata['tile_height']}x{metadata['tile_width']}"  # e.g., "24x32"
+        tile_count = metadata['num_tiles_y'] * metadata['num_tiles_x']  # 20 * 20 = 400
+        tile_bit_size = 24 + (8 * 4)  # 56 bits
+        total_size_of_encoded_data = tile_count * tile_bit_size  # 400 * 56 = 22,400 bits
+        frame_rate = 30  # Assuming 30 fps
+        data_rate_kbps = (total_size_of_encoded_data * frame_rate) // 1000  # 672 kbps
+        
+        # Format the analytics as a single line
+        # analytics_text = (f"Tile Area: {tile_area}, Count: {tile_count},"
+        #                 f"Tile Size: {tile_bit_size} bits, Total: {total_size_of_encoded_data} bits,"
+        #                 f"Rate: {data_rate_kbps} kbps")
+        lines = [
+            f"Tile Area: {tile_area}",
+            f"Tile Count: {tile_count}",
+            f"Tile Size: {tile_bit_size} bits"
+            f"Total Size: {total_size_of_encoded_data} bits",
+            f"Rate: {data_rate_kbps} kbps"
+        ]
+        
+        # Decode the frame
+        output_frame = self.decode_gradient_tiles(encoded_data)
+        
+        # Overlay the analytics text on the frame
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        font_color = (255, 255, 255)  # White text
+        thickness = 1
+        line_spacing = 20
+        text_pos_x = 10
+        text_pos_y = 20
+        # position = (10, 30)  # Top-left corner (x, y)
+        
+        # Add a semi-transparent black background for readability
+        for i, line in enumerate(lines):
+            pos = (text_pos_x, text_pos_y + i * line_spacing)
+            # y = start_y + i * line_spacing
+            # y_pos = position[1] + i * 20
+            text_size, _ = cv2.getTextSize(line, font, font_scale, thickness)
+            text_w, text_h = text_size
+            # background_top_left = (position[0], position[1] - text_h - 5)
+            # background_bottom_right = (position[0] + text_w + 5, position[1] + 5)
+            # cv2.rectangle(output_frame, background_top_left, background_bottom_right, (0, 0, 0), -1)  # Black background
+            cv2.putText(output_frame, line, pos, font, font_scale, font_color, thickness)
+        
+        return output_frame
     
     def get_diagonal_indices(self, start_x, start_y, width, height):
         """Compute the indices of a diagonal starting at (start_x, start_y) with wrapping."""
@@ -4098,23 +4160,174 @@ class VideoApp:
 
         # Upscale for display
         return cv2.resize(frame_rgb, (self.display_width, self.display_height), interpolation=cv2.INTER_NEAREST)
+    
+    def encode_interlaced_h(self, frame):
+        """
+        Encode a frame for horizontal interlacing by selecting even or odd rows.
 
-    def transformer_interlace(self, frame):
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+
+        Returns:
+            tuple: (rows_data, is_even_frame, height)
+                - rows_data: np.ndarray of the selected rows.
+                - is_even_frame: bool, True if even rows are selected.
+                - height: int, frame height.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        # Initialize state if not present
+        if not hasattr(self, 'interlaced_h_frame_count'):
+            self.interlaced_h_frame_count = 0
+        
+        self.interlaced_h_frame_count += 1
+        is_even_frame = (self.interlaced_h_frame_count % 2 == 0)
+        height = frame.shape[0]
+        
+        # Select even or odd rows
+        if is_even_frame:
+            rows_data = frame[0:height:2, :, :].copy()  # Even rows (0, 2, 4, ...)
+        else:
+            rows_data = frame[1:height:2, :, :].copy()  # Odd rows (1, 3, 5, ...)
+        
+        return rows_data, is_even_frame, height
+    
+    def decode_interlaced_h(self, encoded_data):
+        """
+        Decode the interlaced data by updating even or odd rows in the persistent frame.
+
+        Args:
+            encoded_data: tuple (rows_data, is_even_frame, height)
+                - rows_data: np.ndarray of the selected rows.
+                - is_even_frame: bool, True if even rows are selected.
+                - height: int, frame height.
+
+        Returns:
+            np.ndarray: Updated frame (480, 640, 3), uint8.
+        """
+        rows_data, is_even_frame, height = encoded_data
+        
+        # Initialize persistent frame if not present
+        if not hasattr(self, 'interlaced_h_last_frame'):
+            self.interlaced_h_last_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        output_frame = self.interlaced_h_last_frame.copy()
+        
+        # Update even or odd rows
+        if is_even_frame:
+            output_frame[0:height:2, :, :] = rows_data
+        else:
+            output_frame[1:height:2, :, :] = rows_data
+        
+        self.interlaced_h_last_frame = output_frame.copy()
+        return output_frame
+
+    def transformer_interlaced_h(self, frame):
         if len(frame.shape) == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-
-        if self.last_frame is None:
-            self.last_frame = frame.copy()
-        self.frame_count += 1
-        is_even_frame = (self.frame_count % 2 == 0)
-        output_frame = self.last_frame.copy()
-        height = frame.shape[0]
-        if is_even_frame:
-            output_frame[0:height:2, :, :] = frame[0:height:2, :, :]
-        else:
-            output_frame[1:height:2, :, :] = frame[1:height:2, :, :]
-        self.last_frame = output_frame.copy()
+        
+        encoded_data = self.encode_interlaced_h(frame)
+        rows_data, is_even_frame, height = encoded_data
+        
+        # Compute analytics
+        rows_updated = rows_data.shape[0]  # Number of rows updated
+        data_size_bits = rows_updated * frame.shape[1] * 3 * 8  # Rows × cols × channels × bits
+        frame_rate = 30
+        data_rate_kbps = (data_size_bits * frame_rate) // 1000
+        analytics_text = (f"Interlaced H: {'Even' if is_even_frame else 'Odd'} Rows, "
+                        f"Updated: {rows_updated}, Data: {data_size_bits} bits, Rate: {data_rate_kbps} kbps")
+        
+        output_frame = self.decode_interlaced_h(encoded_data)
+        
+        # # Overlay analytics
+        # font = cv2.FONT_HERSHEY_SIMPLEX
+        # font_scale = 0.6
+        # font_color = (255, 255, 255)
+        # thickness = 1
+        # position = (10, 30)
+        # text_size, _ = cv2.getTextSize(analytics_text, font, font_scale, thickness)
+        # text_w, text_h = text_size
+        # background_top_left = (position[0], position[1] - text_h - 5)
+        # background_bottom_right = (position[0] + text_w + 5, position[1] + 5)
+        # cv2.rectangle(output_frame, background_top_left, background_bottom_right, (0, 0, 0), -1)
+        # cv2.putText(output_frame, analytics_text, position, font, font_scale, font_color, thickness)
+        
         return output_frame
+    
+    def encode_interlaced_v(self, frame):
+        """
+        Encode a frame for vertical interlacing by selecting even or odd columns.
+
+        Args:
+            frame: np.ndarray of shape (480, 640, 3) with uint8 values (RGB).
+
+        Returns:
+            tuple: (cols_data, is_even_frame, width)
+                - cols_data: np.ndarray of the selected columns.
+                - is_even_frame: bool, True if even columns are selected.
+                - width: int, frame width.
+        """
+        assert frame.shape == (480, 640, 3) and frame.dtype == np.uint8, "Frame must be 480x640x3 uint8"
+        
+        if not hasattr(self, 'interlaced_v_frame_count'):
+            self.interlaced_v_frame_count = 0
+        
+        self.interlaced_v_frame_count += 1
+        is_even_frame = (self.interlaced_v_frame_count % 2 == 0)
+        width = frame.shape[1]
+        
+        if is_even_frame:
+            cols_data = frame[:, 0:width:2, :].copy()  # Even columns (0, 2, 4, ...)
+        else:
+            cols_data = frame[:, 1:width:2, :].copy()  # Odd columns (1, 3, 5, ...)
+        
+        return cols_data, is_even_frame, width
+    
+    def decode_interlaced_v(self, encoded_data):
+        """
+        Decode the interlaced data by updating even or odd columns in the persistent frame.
+
+        Args:
+            encoded_data: tuple (cols_data, is_even_frame, width)
+                - cols_data: np.ndarray of the selected columns.
+                - is_even_frame: bool, True if even columns are selected.
+                - width: int, frame width.
+
+        Returns:
+            np.ndarray: Updated frame (480, 640, 3), uint8.
+        """
+        cols_data, is_even_frame, width = encoded_data
+        
+        if not hasattr(self, 'interlaced_v_last_frame'):
+            self.interlaced_v_last_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        output_frame = self.interlaced_v_last_frame.copy()
+        
+        if is_even_frame:
+            output_frame[:, 0:width:2, :] = cols_data
+        else:
+            output_frame[:, 1:width:2, :] = cols_data
+        
+        self.interlaced_v_last_frame = output_frame.copy()
+
+        return output_frame
+    
+    def transformer_interlaced_v(self, frame):
+        """
+        Transform a frame using vertical interlacing (column-based).
+
+        Args:
+            frame: np.ndarray (480, 640, 3) or (480, 640), uint8.
+
+        Returns:
+            np.ndarray: Interlaced frame (480, 640, 3), uint8.
+        """
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        
+        encoded_data = self.encode_interlaced_v(frame)
+
+        return self.decode_interlaced_v(encoded_data)
     
     def transformer_magic_area(self, frame, cell_size=32, num_magic_areas=16, operations=None):
         """
