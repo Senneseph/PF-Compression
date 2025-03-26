@@ -612,6 +612,7 @@ class VideoApp:
             'height': 0,
             'width': 0
         }
+        self.palette = None  # Persistent palette {color: count}
 
         # RGB Even/Odd Strobe attributes
         self.rgb_even_odd_strobe_cycle = 0
@@ -826,17 +827,29 @@ class VideoApp:
         # Timing: Quantize color space (16 levels per channel, 16*16*16 = 4096 possible colors)
         start_time = time.time()
         quant_factor = 16
-        frame_quantized = (frame_rgb // quant_factor) * quant_factor
+        frame_quantized = (frame_rgb // quant_factor)  # Map to 0-15
         quant_time = (time.time() - start_time) * 1000  # ms
         print(f"Encode - Quantize color space: {quant_time:.1f} ms")
         
-        # Timing: 24-bit Color Histogram (vectorized with np.unique)
+        # Timing: 24-bit Color Histogram (using 3D array)
         start_time = time.time()
-        pixels = frame_quantized.reshape(-1, 3)  # Shape: (307200, 3)
-        unique_colors, counts = np.unique(pixels, axis=0, return_counts=True)
-        color_counts = {tuple(color): int(count) for color, count in zip(unique_colors, counts)}
+        # Create a 3D histogram array (16x16x16)
+        hist = np.zeros((16, 16, 16), dtype=np.int32)
+        # Use advanced indexing to increment counts
+        r_indices = frame_quantized[:, :, 0]  # Shape: (480, 640)
+        g_indices = frame_quantized[:, :, 1]
+        b_indices = frame_quantized[:, :, 2]
+        np.add.at(hist, (r_indices, g_indices, b_indices), 1)
+        # Convert to dictionary of non-zero counts
+        nonzero_indices = np.nonzero(hist)
+        color_counts = {}
+        for r, g, b in zip(nonzero_indices[0], nonzero_indices[1], nonzero_indices[2]):
+            count = hist[r, g, b]
+            # Map indices back to RGB values (e.g., 0 -> 0, 1 -> 16, ..., 15 -> 240)
+            color = (r * quant_factor, g * quant_factor, b * quant_factor)
+            color_counts[color] = count
         hist_time = (time.time() - start_time) * 1000  # ms
-        print(f"Encode - 24-bit histogram (np.unique): {hist_time:.1f} ms")
+        print(f"Encode - 24-bit histogram (3D array): {hist_time:.1f} ms")
         print(f"Encode - Number of unique 24-bit colors: {len(color_counts)}")
         
         # Timing: R, G, B Channel Histograms (for analytics)
@@ -889,32 +902,33 @@ class VideoApp:
         height, width = stats['height'], stats['width']
         total_pixels = stats['total_pixels']
         
-        # Timing: Create list of all colors based on counts
+        # Timing: Create array of unique colors and counts
         start_time = time.time()
-        unique_colors = list(stats['image_colors'].keys())
-        color_counts = list(stats['image_colors'].values())
-        # Create a flat list of colors, repeating each color by its count
-        all_colors = []
-        for color, count in zip(unique_colors, color_counts):
-            all_colors.extend([color] * count)
-        # Convert to NumPy array for faster processing
-        all_colors = np.array(all_colors, dtype=np.uint8)  # Shape: (307200, 3)
-        list_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Create color list: {list_time:.1f} ms")
+        unique_colors = np.array(list(stats['image_colors'].keys()), dtype=np.uint8)  # Shape: (num_colors, 3)
+        color_counts = np.array(list(stats['image_colors'].values()), dtype=np.int32)  # Shape: (num_colors,)
+        create_arrays_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Create arrays: {create_arrays_time:.1f} ms")
         print(f"Decode - Number of unique colors: {len(unique_colors)}")
-        print(f"Decode - Total colors in list: {len(all_colors)}")
         
-        # Timing: Shuffle the colors
+        # Timing: Create indices for all colors
         start_time = time.time()
-        np.random.shuffle(all_colors)  # Shuffle in-place
+        # Repeat indices according to counts (e.g., if color 0 has count 100, repeat index 0 100 times)
+        indices = np.repeat(np.arange(len(unique_colors)), color_counts)  # Shape: (307200,)
+        list_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Create indices: {list_time:.1f} ms")
+        print(f"Decode - Total indices: {len(indices)}")
+        
+        # Timing: Shuffle indices
+        start_time = time.time()
+        np.random.shuffle(indices)  # Shuffle indices, not colors
         shuffle_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Shuffle colors: {shuffle_time:.1f} ms")
+        print(f"Decode - Shuffle indices: {shuffle_time:.1f} ms")
         
-        # Timing: Reshape to frame
+        # Timing: Map indices to colors
         start_time = time.time()
-        output_frame = all_colors.reshape(height, width, 3)  # Shape: (480, 640, 3)
-        reshape_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Reshape to frame: {reshape_time:.1f} ms")
+        output_frame = unique_colors[indices].reshape(height, width, 3)  # Shape: (480, 640, 3)
+        map_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Map indices to colors: {map_time:.1f} ms")
         
         # Timing: Color space conversion
         start_time = time.time()
@@ -923,7 +937,7 @@ class VideoApp:
         print(f"Decode - Color space conversion: {cvt_time:.1f} ms")
         
         # Total decode time
-        total_decode_time = list_time + shuffle_time + reshape_time + cvt_time
+        total_decode_time = create_arrays_time + list_time + shuffle_time + map_time + cvt_time
         print(f"Decode - Total time: {total_decode_time:.1f} ms")
         
         return output_frame
