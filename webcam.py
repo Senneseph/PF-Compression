@@ -499,6 +499,7 @@ class VideoApp:
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "Treasure Filter": self.filter_contrast_color_axes,
             "70s' Panavision": self.filter_1970s_panavision,
             "Mid 4-bit Filter": self.filter_middle_four_bits,
             "Color Negative Filter": self.filter_color_negative,
@@ -857,6 +858,147 @@ class VideoApp:
         frame_with_grain = np.clip(frame_with_grain, 0, 255).astype(np.uint8)
         
         return frame_with_grain
+    
+    def filter_contrast_color_axes(self, frame, color_axes=None):
+        # Convert to float for precision
+        frame_float = frame.astype(np.float32) / 255.0
+        
+        # Convert to HSV for hue-based axis assignment
+        frame_hsv = cv2.cvtColor(frame_float, cv2.COLOR_BGR2HSV)
+        hue = frame_hsv[:, :, 0]  # Hue in [0, 360]
+        
+        # Default color axes if none provided
+        if color_axes is None:
+            color_axes = [("red", 0.0), ("yellow", 60.0), ("green", 120.0), ("blue", 240.0)]
+        
+        # Assign pixels to nearest color axis based on hue
+        target_rgbs = [cv2.cvtColor(np.array([[[h, 1.0, 1.0]]], dtype=np.float32), cv2.COLOR_HSV2BGR)[0, 0]
+                    for _, h in color_axes]
+        target_rgbs = np.array(target_rgbs)
+        distances = np.stack([np.minimum(np.abs(hue - h), 360 - np.abs(hue - h)) for _, h in color_axes], axis=-1)
+        nearest_axis = np.argmin(distances, axis=-1)
+        
+        # Nudge pixels toward their axis, scaled by intensity
+        intensity = np.mean(frame_float, axis=2)
+        nudge_factor = np.clip(0.1 * (intensity / 0.5), 0, 0.2)
+        target_rgb_map = target_rgbs[nearest_axis]
+        delta = (target_rgb_map - frame_float) * nudge_factor[:, :, np.newaxis]
+        frame_float = np.clip(frame_float + delta, 0, 1)
+        
+        # Add subtle noise at axis boundaries
+        axis_diff = nearest_axis[:, :-1] != nearest_axis[:, 1:]
+        noise = np.random.uniform(-0.01, 0.01, size=(frame.shape[0], frame.shape[1] - 1, 3))
+        frame_float[:, :-1] += noise * axis_diff[:, :, np.newaxis]
+        frame_float = np.clip(frame_float, 0, 1)
+        
+        # Convert back to uint8
+        return (frame_float * 255).astype(np.uint8)
+    
+    def filter_contrast_color_axes_orig(self, frame, color_axes=None):
+        """
+        Filter to enhance contrast by classifying pixels as light, mid, or dark,
+        and adjusting colors along specified color axes.
+        Mid-tones are pushed toward the nearest axis, while highlights and shadows
+        diverge slightly for natural noise.
+        
+        Args:
+            frame (np.ndarray): Input frame of shape (height, width, 3), dtype uint8 (RGB or BGR).
+            color_axes (list): List of tuples [(name, hue), ...] defining the color axes.
+                            If None, defaults to blue-orange, green-brown, red-cyan, yellow-purple.
+        
+        Returns:
+            np.ndarray: Filtered frame with enhanced contrast and color axes, same shape and dtype.
+        """
+        # Ensure the frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        
+        # Convert to float for processing
+        frame_float = frame.astype(np.float32) / 255.0
+        
+        # Step 1: Classify pixels by intensity (average RGB)
+        intensity = np.mean(frame_float, axis=2)  # Shape: (height, width)
+        dark_mask = intensity < (30 / 255.0)      # Dark: < 30
+        light_mask = intensity > (226 / 255.0)    # Light: > 226
+        mid_mask = (intensity >= (30 / 255.0)) & (intensity <= (226 / 255.0))  # Mid: 30–226
+        
+        # Step 2: Convert to HSV for hue-based adjustments
+        frame_hsv = cv2.cvtColor(frame_float, cv2.COLOR_BGR2HSV)
+        hue = frame_hsv[:, :, 0]  # Hue in [0, 360]
+        saturation = frame_hsv[:, :, 1]  # Saturation in [0, 1]
+        value = frame_hsv[:, :, 2]  # Value in [0, 1]
+        
+        # Step 3: Define color axes as an array
+        if color_axes is None:
+            color_axes = [
+                ("blue", 240.0),    # Sky, water
+                ("orange", 30.0),   # Skin tones, firelight
+                # ("green", 120.0),   # Plants
+                # ("brown", 35.0),    # Earth tones (desaturated orange)
+                # ("red", 0.0),       # Jewels (rubies)
+                # ("cyan", 180.0),    # Complementary to red
+                # ("yellow", 60.0),   # Gold coins, amber
+                # ("purple", 240.0),  # Complementary to yellow (same as blue, but used differently)
+            ]
+        
+        # Step 4: Adjust mid-tone pixels (push toward nearest axis)
+        # Compute distances to each axis
+        distances = []
+        for _, axis_hue in color_axes:
+            dist = np.minimum(np.abs(hue - axis_hue), 360 - np.abs(hue - axis_hue))
+            distances.append(dist)
+        
+        distances = np.stack(distances, axis=-1)  # Shape: (height, width, num_axes)
+        nearest_axis = np.argmin(distances, axis=-1)  # Shape: (height, width)
+        
+        # Create masks for each axis and adjust hues
+        nudge_factor = 0.2  # How much to shift the hue (20% toward the target)
+        for idx, (name, axis_hue) in enumerate(color_axes):
+            axis_nearest = (nearest_axis == idx) & mid_mask
+            
+            # Nudge hues toward the axis for mid-tones
+            hue[axis_nearest] = (1 - nudge_factor) * hue[axis_nearest] + nudge_factor * axis_hue
+            
+            # Adjust saturation based on the axis
+            if name in ["brown", "purple"]:  # Desaturate for earthy or shadowy tones
+                saturation[axis_nearest] *= 0.8
+            elif name in ["red", "yellow"]:  # Boost saturation for vivid jewels and gold
+                saturation[axis_nearest] *= 1.2
+            else:  # Slight boost for other colors
+                saturation[axis_nearest] *= 1.1
+        
+        # Ensure saturation stays in bounds
+        saturation = np.clip(saturation, 0, 1)
+        
+        # Step 5: Adjust highlights and shadows (diverge from nearest axis)
+        # Add small random noise to hue and saturation
+        noise_scale = 0.05  # Small noise for natural variation
+        hue_noise = np.random.uniform(-noise_scale * 360, noise_scale * 360, hue.shape)
+        sat_noise = np.random.uniform(-noise_scale, noise_scale, saturation.shape)
+        
+        # Apply noise to highlights and shadows, pushing away from the nearest axis
+        diverge_factor = 0.1  # How much to diverge
+        hue_shift = np.zeros_like(hue)
+        for idx, (_, axis_hue) in enumerate(color_axes):
+            axis_nearest = (nearest_axis == idx) & (light_mask | dark_mask)
+            hue_shift[axis_nearest] = diverge_factor * (hue[axis_nearest] - axis_hue)
+        
+        hue[light_mask | dark_mask] += hue_shift[light_mask | dark_mask] + hue_noise[light_mask | dark_mask]
+        saturation[light_mask | dark_mask] += sat_noise[light_mask | dark_mask]
+        
+        # Wrap hue around [0, 360] and clip saturation
+        hue = np.mod(hue, 360)
+        saturation = np.clip(saturation, 0, 1)
+        
+        # Step 6: Reconstruct the HSV frame and convert back to BGR
+        frame_hsv[:, :, 0] = hue
+        frame_hsv[:, :, 1] = saturation
+        frame_float = cv2.cvtColor(frame_hsv, cv2.COLOR_HSV2BGR)
+        
+        # Ensure no clipping
+        frame_float = np.clip(frame_float, 0, 1)
+        
+        # Convert back to uint8
+        return (frame_float * 255).astype(np.uint8)
 
     def filter_bleeding_points(self, frame):
         """
