@@ -499,6 +499,9 @@ class VideoApp:
         # Transformer map
         self.transformer_map = {
             "Dummy": self.transformer_dummy,
+            "70s' Panavision": self.filter_1970s_panavision,
+            "Mid 4-bit Filter": self.filter_middle_four_bits,
+            "Color Negative Filter": self.filter_color_negative,
             "Prime Factor Row": self.transformer_prime_factor_row,
             "Prime Factor Signature": self.transformer_prime_factor_signature,
             "Pythagorean Triple": self.transformer_pythagorean_triple,
@@ -733,6 +736,115 @@ class VideoApp:
         self.last_frame = None
         self.frame_count = 0
         self.current_transformer = self.transformer_map.get(value, self.transformer_dummy)
+
+    def filter_middle_four_bits(self, frame):
+        """
+        Filter to preserve only the middle four bits (bits 2-5) of each pixel in an RGB frame,
+        setting all other bits (0, 1, 6, 7) to zero.
+        
+        Args:
+            frame (np.ndarray): Input frame of shape (height, width, 3), dtype uint8 (RGB or BGR).
+        
+        Returns:
+            np.ndarray: Filtered frame with only middle four bits preserved, same shape and dtype.
+        """
+        # Ensure the frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        
+        # Create a mask for bits 2-5: 00111100 in binary, which is 60 in decimal
+        mask = 0b00111100  # Decimal 60, preserves bits 2, 3, 4, 5
+        
+        # Apply the mask to all pixels in all channels using bitwise AND
+        # This zeros out bits 0, 1, 6, and 7, keeping bits 2-5 unchanged
+        filtered_frame = frame & mask
+        return filtered_frame
+    
+    def filter_color_negative(self, frame):
+        """
+        Filter to convert an RGB frame into its color negative by inverting each channel.
+        For each pixel value in each channel, the new value is 255 - original_value.
+        
+        Args:
+            frame (np.ndarray): Input frame of shape (height, width, 3), dtype uint8 (RGB or BGR).
+        
+        Returns:
+            np.ndarray: Filtered frame with color negative effect, same shape and dtype.
+        """
+        # Ensure the frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        
+        # Invert the frame: new_value = 255 - original_value for each channel
+        negative_frame = 255 - frame
+        
+        return negative_frame
+    
+    def filter_1970s_panavision(self, frame):
+        """
+        Filter to emulate 1970s Panavision color grading, like Conan the Barbarian.
+        Applies color adjustments, softness, bloom, and grain to mimic the era's look.
+        
+        Args:
+            frame (np.ndarray): Input frame of shape (height, width, 3), dtype uint8 (RGB or BGR).
+        
+        Returns:
+            np.ndarray: Filtered frame with 1970s Panavision aesthetic, same shape and dtype.
+        """
+        # Ensure the frame is in uint8 format
+        frame = frame.astype(np.uint8)
+        
+        # Step 1: Color Adjustments (Mimicking Kodak 5247 and 1970s grading)
+        # Convert to float for processing
+        frame_float = frame.astype(np.float32) / 255.0
+        
+        # Adjust temperature (warm shift) and tint
+        # Simple approximation: increase red, slightly decrease blue
+        frame_float[:, :, 2] *= 1.05  # Boost red channel (BGR order in OpenCV)
+        frame_float[:, :, 0] *= 0.95  # Reduce blue channel
+        frame_float = np.clip(frame_float, 0, 1)
+        
+        # Desaturate overall, but boost reds and yellows
+        frame_hsv = cv2.cvtColor(frame_float, cv2.COLOR_BGR2HSV)
+        frame_hsv[:, :, 1] *= 0.85  # Reduce saturation by 15%
+        # Boost saturation for reds (hue 0-30, 330-360) and yellows (hue 30-60)
+        mask_red = ((frame_hsv[:, :, 0] <= 30) | (frame_hsv[:, :, 0] >= 330)) | \
+                ((frame_hsv[:, :, 0] >= 30) & (frame_hsv[:, :, 0] <= 60))
+        frame_hsv[mask_red, 1] *= 1.2  # Increase saturation for reds and yellows
+        frame_float = cv2.cvtColor(frame_hsv, cv2.COLOR_HSV2BGR)
+        
+        # Split toning: golden highlights, greenish shadows
+        highlights = frame_float > 0.7
+        shadows = frame_float < 0.3
+        frame_float[highlights] = frame_float[highlights] * 0.8 + np.array([200/255, 245/255, 255/255]) * 0.2
+        frame_float[shadows] = frame_float[shadows] * 0.9 + np.array([205/255, 210/255, 200/255]) * 0.1
+        
+        # Increase contrast and crush blacks
+        frame_float = (frame_float - 0.1) * 1.5  # Shift and scale for higher contrast
+        frame_float = np.clip(frame_float, 0, 1)
+        
+        # Step 2: Apply LUT (Placeholder)
+        # In practice, export the above color adjustments as a 3D LUT (.cube) using DaVinci Resolve
+        # Then apply the LUT here using a LUT application function (e.g., cv2.LUT or a custom function)
+        # For now, we proceed with the adjusted frame
+        frame_adjusted = (frame_float * 255).astype(np.uint8)
+        
+        # Step 3: Emulate Lens Softness
+        frame_soft = cv2.GaussianBlur(frame_adjusted, (5, 5), sigmaX=0.5)
+        
+        # Step 4: Bloom Effect for Highlights
+        # Isolate highlights
+        gray = cv2.cvtColor(frame_adjusted, cv2.COLOR_BGR2GRAY)
+        highlights = gray > 200
+        bloom = cv2.GaussianBlur(frame_adjusted.astype(np.float32), (15, 15), sigmaX=2.0)
+        bloom = bloom.astype(np.uint8)
+        frame_soft[highlights] = 0.7 * frame_soft[highlights] + 0.3 * bloom[highlights]
+        
+        # Step 5: Add Film Grain
+        grain = np.random.normal(0, 10, frame_soft.shape).astype(np.float32)
+        grain[:, :, 0] *= 1.2  # More grain in blue channel
+        frame_with_grain = frame_soft.astype(np.float32) + grain
+        frame_with_grain = np.clip(frame_with_grain, 0, 255).astype(np.uint8)
+        
+        return frame_with_grain
 
     def filter_bleeding_points(self, frame):
         """
