@@ -438,6 +438,10 @@ class VideoApp:
         self.last_display_frame = None
         self.last_frame_time = 0
 
+        # Sub-frame stack for temporal transformers
+        self.sub_frame_stack = []
+        self.last_sub_frame_time = 0  # Track the last sub-frame render time
+
         # Constraints:
         self.block_size = 16  # Customize this based on desired granularity
         self.encoded_constraints = []
@@ -538,6 +542,8 @@ class VideoApp:
             "Mondrian Next": self.transformer_mondrian_next,
             "Complexity Test": self.transformer_complexity_test,
             "Metrics": self.transformer_metrics,
+            # "Color Negative Bleed Filter": self.filter_color_negative_bleed,
+            "Color Negative Bleeding Points": self.filter_bleeding_points,
         }
         self.current_transformer = self.transformer_dummy
 
@@ -664,15 +670,20 @@ class VideoApp:
         print(f"  Default Frame Rate: {fps}")
 
     def camera_reader(self):
+        """
+        Capture frames from the webcam and put them into the frame queue.
+        """
         while self.camera_running and self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
                 try:
                     self.frame_queue.put(frame, block=False)
                 except queue.Full:
-                    time.sleep(0.01)
+                    # If the queue is full, skip this frame and continue
                     continue
-            time.sleep(0.01)
+            else:
+                # If frame capture fails, wait briefly to avoid busy-waiting
+                time.sleep(0.001)
 
     def update_camera(self, value):
         for index, name in self.camera_list:
@@ -1338,6 +1349,51 @@ class VideoApp:
             threading.Thread(target=self._process_frame, args=(frame,), daemon=True).start()
         
         return self.last_display_frame if self.last_display_frame is not None else frame
+    
+    def display_loop(self):
+        """
+        Main display loop to render sub-frames at 120 Hz using temporal interlacing.
+        """
+        sub_frame_interval = 1.0 / 120  # 8.33 ms per sub-frame
+        frame_interval = 1.0 / 30       # 33.33 ms per full frame
+        sub_frames_per_frame = 4        # 4 sub-frames per full frame (120 Hz / 30 fps)
+        
+        # Initialize timing variables
+        last_sub_frame_time = time.time()
+        last_full_frame_time = time.time()
+        current_frame = None
+        
+        while self.camera_running:
+            # Check for a new frame from the queue (at 30 fps)
+            current_time = time.time()
+            if current_time - last_full_frame_time >= frame_interval:
+                try:
+                    # Get the latest frame, clearing the queue if necessary
+                    while not self.frame_queue.empty():
+                        current_frame = self.frame_queue.get(block=False)
+                    last_full_frame_time = current_time
+                except queue.Empty:
+                    # If no new frame, reuse the current frame
+                    pass
+            
+            # If we have a frame, process it into a sub-frame
+            if current_frame is not None:
+                # Wait until the next sub-frame interval
+                elapsed = current_time - last_sub_frame_time
+                if elapsed >= sub_frame_interval:
+                    # Apply the transformer to generate the next sub-frame
+                    transformed_frame = self.transformer_map[self.current_transformer](current_frame)
+                    
+                    # Display the sub-frame
+                    cv2.imshow("Video Shader Effects", transformed_frame)
+                    
+                    last_sub_frame_time = current_time
+                else:
+                    # Sleep for the remaining time to maintain 120 Hz
+                    time.sleep(sub_frame_interval - elapsed)
+            else:
+                # If no frame yet, wait briefly and continue
+                time.sleep(0.001)
     
     def _process_frame(self, frame):
         frame = frame.astype(np.uint8)
