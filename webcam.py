@@ -891,10 +891,11 @@ class VideoApp:
     
     def decode_statistical_vision(self, stats):
         """
-        Decode the frame by shuffling the colors from the 24-bit palette to match their exact counts.
+        Decode the frame by sampling colors with a 50:50 split between 24-bit and 8-bit histograms.
+        Uses a decremental approach to ensure exact proportions.
         
         Args:
-            stats: dict containing the 24-bit color histogram ('image_colors').
+            stats: dict containing the 24-bit color histogram ('image_colors') and 8-bit channel histograms ('image_r', 'image_g', 'image_b').
         
         Returns:
             np.ndarray: Reconstructed frame (480, 640, 3), uint8 (BGR).
@@ -902,33 +903,99 @@ class VideoApp:
         height, width = stats['height'], stats['width']
         total_pixels = stats['total_pixels']
         
-        # Timing: Create array of unique colors and counts
+        # Timing: Create working copies of histograms
         start_time = time.time()
-        unique_colors = np.array(list(stats['image_colors'].keys()), dtype=np.uint8)  # Shape: (num_colors, 3)
-        color_counts = np.array(list(stats['image_colors'].values()), dtype=np.int32)  # Shape: (num_colors,)
-        create_arrays_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Create arrays: {create_arrays_time:.1f} ms")
-        print(f"Decode - Number of unique colors: {len(unique_colors)}")
+        color_counts = dict(stats['image_colors'])  # {color: count}
+        r_counts = stats['image_r'].copy()  # [0-255] -> count
+        g_counts = stats['image_g'].copy()
+        b_counts = stats['image_b'].copy()
+        create_hist_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Create histogram copies: {create_hist_time:.1f} ms")
+        print(f"Decode - Number of unique 24-bit colors: {len(color_counts)}")
+        print(f"Decode - Number of unique R values: {np.sum(r_counts > 0)}")
+        print(f"Decode - Number of unique G values: {np.sum(g_counts > 0)}")
+        print(f"Decode - Number of unique B values: {np.sum(b_counts > 0)}")
         
-        # Timing: Create indices for all colors
+        # Timing: Initialize output frame and sampling method
         start_time = time.time()
-        # Repeat indices according to counts (e.g., if color 0 has count 100, repeat index 0 100 times)
-        indices = np.repeat(np.arange(len(unique_colors)), color_counts)  # Shape: (307200,)
-        list_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Create indices: {list_time:.1f} ms")
-        print(f"Decode - Total indices: {len(indices)}")
+        output_frame = np.zeros((height, width, 3), dtype=np.uint8)  # Shape: (480, 640, 3)
+        pixels_flat = output_frame.reshape(-1, 3)  # Shape: (307200, 3)
+        total_24bit = total_8bit = total_pixels // 2  # 153,600 each for 50:50 split
+        remaining_24bit = total_24bit
+        remaining_8bit = total_8bit
+        # Create a mask for sampling method (0 for 24-bit, 1 for 8-bit)
+        method_choices = np.zeros(total_pixels, dtype=np.uint8)
+        method_choices[:total_8bit] = 1  # First half for 8-bit
+        np.random.shuffle(method_choices)  # Randomize which pixels use which method
+        init_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Initialize frame and method: {init_time:.1f} ms")
         
-        # Timing: Shuffle indices
+        # Timing: Sample colors
         start_time = time.time()
-        np.random.shuffle(indices)  # Shuffle indices, not colors
-        shuffle_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Shuffle indices: {shuffle_time:.1f} ms")
+        pixel_idx = 0
+        while pixel_idx < total_pixels:
+            method = method_choices[pixel_idx]
+            
+            if method == 0 and remaining_24bit > 0 and color_counts:
+                # 24-bit sampling
+                colors = list(color_counts.keys())
+                counts = np.array(list(color_counts.values()), dtype=np.int32)
+                probs = counts / counts.sum()
+                chosen_idx = np.random.choice(len(colors), p=probs)
+                chosen_color = colors[chosen_idx]
+                pixels_flat[pixel_idx] = chosen_color
+                # Decrement count
+                color_counts[chosen_color] -= 1
+                if color_counts[chosen_color] == 0:
+                    del color_counts[chosen_color]
+                remaining_24bit -= 1
+                pixel_idx += 1
+            elif method == 1 and remaining_8bit > 0:
+                # 8-bit sampling
+                # Sample R
+                r_vals = np.where(r_counts > 0)[0]
+                if len(r_vals) == 0:
+                    method_choices[pixel_idx] = 0  # Switch to 24-bit if R is exhausted
+                    continue
+                r_probs = r_counts[r_vals] / r_counts[r_vals].sum()
+                r = int(np.random.choice(r_vals, p=r_probs))
+                r_counts[r] -= 1
+                
+                # Sample G
+                g_vals = np.where(g_counts > 0)[0]
+                if len(g_vals) == 0:
+                    method_choices[pixel_idx] = 0
+                    r_counts[r] += 1  # Revert R decrement
+                    continue
+                g_probs = g_counts[g_vals] / g_counts[g_vals].sum()
+                g = int(np.random.choice(g_vals, p=g_probs))
+                g_counts[g] -= 1
+                
+                # Sample B
+                b_vals = np.where(b_counts > 0)[0]
+                if len(b_vals) == 0:
+                    method_choices[pixel_idx] = 0
+                    r_counts[r] += 1
+                    g_counts[g] += 1
+                    continue
+                b_probs = b_counts[b_vals] / b_counts[b_vals].sum()
+                b = int(np.random.choice(b_vals, p=b_probs))
+                b_counts[b] -= 1
+                
+                pixels_flat[pixel_idx] = (r, g, b)
+                remaining_8bit -= 1
+                pixel_idx += 1
+            else:
+                # If one method is exhausted, switch to the other
+                if remaining_24bit == 0 or not color_counts:
+                    method_choices[pixel_idx] = 1
+                else:
+                    method_choices[pixel_idx] = 0
         
-        # Timing: Map indices to colors
-        start_time = time.time()
-        output_frame = unique_colors[indices].reshape(height, width, 3)  # Shape: (480, 640, 3)
-        map_time = (time.time() - start_time) * 1000  # ms
-        print(f"Decode - Map indices to colors: {map_time:.1f} ms")
+        sample_time = (time.time() - start_time) * 1000  # ms
+        print(f"Decode - Sample colors: {sample_time:.1f} ms")
+        print(f"Decode - 24-bit samples used: {total_24bit - remaining_24bit}")
+        print(f"Decode - 8-bit samples used: {total_8bit - remaining_8bit}")
         
         # Timing: Color space conversion
         start_time = time.time()
@@ -937,7 +1004,7 @@ class VideoApp:
         print(f"Decode - Color space conversion: {cvt_time:.1f} ms")
         
         # Total decode time
-        total_decode_time = create_arrays_time + list_time + shuffle_time + map_time + cvt_time
+        total_decode_time = create_hist_time + init_time + sample_time + cvt_time
         print(f"Decode - Total time: {total_decode_time:.1f} ms")
         
         return output_frame
