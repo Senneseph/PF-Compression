@@ -72,6 +72,9 @@ vertex_shader = pyglet.graphics.shader.Shader(vertex_source, 'vertex')
 fragment_shader = pyglet.graphics.shader.Shader(fragment_source, 'fragment')
 shader_program = pyglet.graphics.shader.ShaderProgram(vertex_shader, fragment_shader)
 
+# Print shader attributes for debugging
+print("Shader attributes:", shader_program.attributes)
+
 # Define vertex attributes for the hex grid, matching the custom shader
 attributes = {
     'position': {
@@ -83,9 +86,9 @@ attributes = {
     },
     'colors': {
         'location': shader_program.attributes['colors']['location'],
-        'format': 'B',
+        'format': 'f',  # Change to float to match shader's vec3
         'count': 3,
-        'normalize': True,
+        'normalize': False,  # We'll provide normalized values directly
         'instance': False
     }
 }
@@ -95,9 +98,9 @@ group = pyglet.graphics.ShaderGroup(shader_program, order=0, parent=None)
 
 # Get a vertex domain from the batch, using GL_LINES
 domain = batch.get_domain(
-    indexed=False,      # No indices
-    instanced=False,    # No instancing
-    mode=pyglet.gl.GL_LINES,  # Use GL_LINES instead of GL_LINE_LOOP
+    indexed=False,
+    instanced=False,
+    mode=pyglet.gl.GL_LINES,
     group=group,
     attributes=attributes
 )
@@ -154,24 +157,23 @@ def on_draw():
             
             # Apply color from palette (cycle through colors)
             color = colors[(row + col) % len(colors)]
+            # Normalize the color values to 0.0-1.0
+            normalized_color = [c / 255.0 for c in color]
+            # print(f"Normalized color for row {row}, col {col}: {normalized_color}")
             
             # Create vertex list for this hex using GL_LINES
-            # For a hex with vertices A, B, C, D, E, F, we need 6 line segments:
-            # A-B, B-C, C-D, D-E, E-F, F-A, which requires 12 vertices
             vertices = []
             for i in range(6):
-                # Get the current vertex and the next one (wrapping around)
                 v1_x = screen_x + hex_vertices[i * 2]
                 v1_y = screen_y + hex_vertices[i * 2 + 1]
                 v2_x = screen_x + hex_vertices[(i * 2 + 2) % 12]
                 v2_y = screen_y + hex_vertices[(i * 2 + 3) % 12]
-                # Add the line segment (v1 to v2)
                 vertices.extend([v1_x, v1_y, v2_x, v2_y])
             
             # Create a vertex list in the domain (12 vertices for 6 line segments)
             vlist = domain.create(12)
             vlist.position[:] = vertices
-            vlist.colors[:] = color * 12  # Repeat color for each vertex
+            vlist.colors[:] = normalized_color * 12  # Use normalized float values
             vertex_lists.append(vlist)
     
     # Draw the batch
