@@ -1,0 +1,30 @@
+{
+  "name": "pf-compression-pwa",
+  "version": "0.1.0",
+  "description": "TypeScript PWA library for PF-Compression effects",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "dev": "bun --watch src/index.ts"
+  },
+  "keywords": [
+    "compression",
+    "effects",
+    "pwa",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.15.11",
+    "jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.0.4"
+  },
+  "dependencies": {
+    "bun": "^1.0.0"
+  }
+}

@@ -1,0 +1,68 @@
+# PF-Compression AI Interaction Guidelines
+
+## Overview
+
+This file provides guidelines for AI agents working on the PF-Compression project. It defines how AI should interact with the codebase, make decisions, and communicate with users.
+
+## AI Interaction Principles
+
+1. **Code-First Approach**: Focus on implementing functional code before optimizing.
+2. **Incremental Development**: Build features incrementally, testing each step.
+3. **Documentation**: Document code thoroughly with comments and update README files.
+4. **Error Handling**: Implement robust error handling and provide clear error messages.
+5. **User Experience**: Consider the end-user experience in all design decisions.
+
+## Decision Making Framework
+
+When making decisions about implementation:
+
+1. Follow the specifications in .plan files when available
+2. Adhere to the project's architectural patterns
+3. Maintain consistency with existing code
+4. Prioritize readability and maintainability
+5. Consider performance implications, especially for real-time video processing
+
+## Communication Guidelines
+
+When communicating with users:
+
+1. **Clarity**: Provide clear explanations of technical concepts
+2. **Context**: Maintain context from previous interactions
+3. **Options**: Present multiple options when appropriate
+4. **Recommendations**: Make specific recommendations based on best practices
+5. **Education**: Explain the reasoning behind recommendations
+
+## Implementation Priorities
+
+1. **Functionality**: Ensure core functionality works correctly
+2. **Performance**: Optimize for real-time video processing
+3. **Usability**: Create intuitive user interfaces
+4. **Compatibility**: Ensure cross-browser and cross-platform compatibility
+5. **Extensibility**: Design for future extensions and modifications
+
+## Technology Stack Preferences
+
+- **Frontend**: TypeScript, HTML5, CSS3
+- **Build Tools**: Bun, npm
+- **Deployment**: Docker, Nginx
+- **Testing**: Jest
+
+## Project-Specific Guidelines
+
+### Video Processing
+
+- Prioritize real-time performance
+- Use WebGL for GPU acceleration when possible
+- Implement fallbacks for browsers without WebGL support
+- Consider memory usage for continuous video processing
+
+### PWA Development
+
+- Ensure offline functionality
+- Implement proper caching strategies
+- Use responsive design for all screen sizes
+- Ensure accessibility compliance
+
+## Continuous Improvement
+
+This file should be updated as the project evolves and new patterns or best practices emerge.
