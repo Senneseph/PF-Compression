@@ -7,24 +7,32 @@ ARG PROJECT_MODE=serve
 FROM oven/bun:1.0 AS build
 
 # Set working directory
-WORKDIR /app
+WORKDIR /src
 
 # Set build arguments as environment variables
 ARG PROJECT_MODE
 ENV PROJECT_MODE=${PROJECT_MODE}
 
 # Copy package.json and package-lock.json
-COPY ts-pwalib/package*.json ./
+COPY app/ts-pwalib/package*.json ./ts-pwalib/
 
 # Install dependencies
+WORKDIR /src/ts-pwalib
 RUN bun install
+WORKDIR /src
 
 # Copy the source code
-COPY ts-pwalib/ ./
+COPY app/ ./app/
 
 # Build the application
+WORKDIR /src/app/ts-pwalib
 RUN echo "Building in ${PROJECT_MODE} mode" && \
     bun run build
+
+# Copy built files to the build directory
+WORKDIR /src
+RUN mkdir -p /src/build
+RUN cp -r /src/app/ts-pwalib/dist/* /src/build/
 
 # Stage 2: Serve the application with Nginx
 FROM cgr.dev/chainguard/nginx:latest
@@ -34,7 +42,7 @@ ARG PROJECT_MODE
 ENV PROJECT_MODE=${PROJECT_MODE}
 
 # Copy the built app from the build stage
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /src/build /usr/share/nginx/html
 
 # Copy custom nginx configuration
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf

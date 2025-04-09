@@ -11,8 +11,10 @@ services:
       - "${SERVICE_PORT:-2338}:2338"
     restart: unless-stopped
     volumes:
-      - ../ts-pwalib:/app
-      - /app/node_modules
+      - ../app:/src/app
+      - ../build:/src/build
+      - ../dist:/src/dist
+      - /src/app/ts-pwalib/node_modules
     environment:
       - NODE_ENV=development
       - PROJECT_MODE=develop

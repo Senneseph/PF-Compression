@@ -6,7 +6,7 @@ ARG PROJECT_MODE=develop
 FROM oven/bun:1.0
 
 # Set working directory
-WORKDIR /app
+WORKDIR /src
 
 # Set build arguments as environment variables
 ARG PROJECT_MODE
@@ -14,19 +14,23 @@ ENV PROJECT_MODE=${PROJECT_MODE}
 ENV NODE_ENV=development
 
 # Copy package.json and package-lock.json
-COPY ts-pwalib/package*.json ./
+COPY app/ts-pwalib/package*.json ./ts-pwalib/
 
 # Install dependencies
+WORKDIR /src/ts-pwalib
 RUN bun install
+WORKDIR /src
 
 # Copy the source code
-COPY ts-pwalib/ ./
+COPY app/ ./app/
 
 # Install development tools
+WORKDIR /src/app/ts-pwalib
 RUN if [ "$PROJECT_MODE" = "develop" ]; then \
       echo "Installing development tools" && \
       bun add -d typescript ts-node nodemon @types/node; \
     fi
+WORKDIR /src
 
 # Expose port 2338
 EXPOSE 2338
@@ -37,4 +41,4 @@ RUN chmod +x /dev-entrypoint.sh
 
 # Start the development server with hot reloading
 ENTRYPOINT ["/dev-entrypoint.sh"]
-CMD ["bun", "--watch", "src/index.ts"]
+CMD ["bun", "--watch", "app/ts-pwalib/src/index.ts"]

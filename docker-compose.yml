@@ -15,6 +15,10 @@ services:
     ports:
       - "${SERVICE_PORT:-2338}:2338"
     restart: unless-stopped
+    volumes:
+      - ./app:/src/app
+      - ./build:/src/build
+      - ./dist:/src/dist
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PROJECT_MODE=${PROJECT_MODE:-serve}
