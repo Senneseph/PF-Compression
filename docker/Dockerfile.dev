@@ -1,0 +1,20 @@
+# Development Dockerfile for PF-Compression PWA
+FROM oven/bun:1.0
+
+# Set working directory
+WORKDIR /app
+
+# Copy package.json and package-lock.json
+COPY ts-pwalib/package*.json ./
+
+# Install dependencies
+RUN bun install
+
+# Copy the source code
+COPY ts-pwalib/ ./
+
+# Expose port 2338
+EXPOSE 2338
+
+# Start the development server with hot reloading
+CMD ["bun", "--watch", "src/index.ts"]

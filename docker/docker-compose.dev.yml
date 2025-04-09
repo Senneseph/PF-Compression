@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  pf-compression-pwa-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    ports:
+      - "2338:2338"
+    restart: unless-stopped
+    volumes:
+      - ../ts-pwalib:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
