@@ -1,8 +1,17 @@
 # Development Dockerfile for PF-Compression PWA
+
+# Accept build arguments
+ARG PROJECT_MODE=develop
+
 FROM oven/bun:1.0
 
 # Set working directory
 WORKDIR /app
+
+# Set build arguments as environment variables
+ARG PROJECT_MODE
+ENV PROJECT_MODE=${PROJECT_MODE}
+ENV NODE_ENV=development
 
 # Copy package.json and package-lock.json
 COPY ts-pwalib/package*.json ./
@@ -13,8 +22,19 @@ RUN bun install
 # Copy the source code
 COPY ts-pwalib/ ./
 
+# Install development tools
+RUN if [ "$PROJECT_MODE" = "develop" ]; then \
+      echo "Installing development tools" && \
+      bun add -d typescript ts-node nodemon @types/node; \
+    fi
+
 # Expose port 2338
 EXPOSE 2338
 
+# Create a startup script
+COPY docker/dev-entrypoint.sh /dev-entrypoint.sh
+RUN chmod +x /dev-entrypoint.sh
+
 # Start the development server with hot reloading
+ENTRYPOINT ["/dev-entrypoint.sh"]
 CMD ["bun", "--watch", "src/index.ts"]

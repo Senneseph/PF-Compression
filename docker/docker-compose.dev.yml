@@ -5,11 +5,18 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.dev
+      args:
+        - PROJECT_MODE=develop
     ports:
-      - "2338:2338"
+      - "${SERVICE_PORT:-2338}:2338"
     restart: unless-stopped
     volumes:
       - ../ts-pwalib:/app
       - /app/node_modules
     environment:
       - NODE_ENV=development
+      - PROJECT_MODE=develop
+      - SERVICE_PORT=${SERVICE_PORT:-2338}
+      - ENABLE_HTTPS=${ENABLE_HTTPS:-false}
+      - ENABLE_COMPRESSION=${ENABLE_COMPRESSION:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-debug}

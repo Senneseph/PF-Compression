@@ -1,18 +1,20 @@
 version: '3.8'
 
+# Main docker-compose file for PF-Compression
+# This file is the main entry point for users to start the application with:
+# docker-compose up -d
+
 services:
+  # Main service for PF-Compression PWA
   pf-compression-pwa:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
       args:
         - PROJECT_MODE=${PROJECT_MODE:-serve}
     ports:
       - "${SERVICE_PORT:-2338}:2338"
     restart: unless-stopped
-    volumes:
-      - ../ts-pwalib:/app
-      - /app/node_modules
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PROJECT_MODE=${PROJECT_MODE:-serve}
@@ -20,3 +22,10 @@ services:
       - ENABLE_HTTPS=${ENABLE_HTTPS:-false}
       - ENABLE_COMPRESSION=${ENABLE_COMPRESSION:-true}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+    # Add healthcheck
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2338"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
