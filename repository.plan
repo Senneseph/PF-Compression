@@ -14,22 +14,28 @@ PF-Compression/
 ├── README.md               # Project overview
 ├── ARCHITECTURE.md         # System architecture
 ├── PROPOSAL.md             # Project proposal
-├── webcam.py               # Original Python implementation
-├── lib/                    # Abstract library interfaces
-├── research-effects-library/ # Concrete effect implementations
-├── examples/               # Example scripts
-├── ts-pwalib/              # TypeScript PWA library
-│   ├── src/                # Source code
-│   ├── dist/               # Compiled output
-│   ├── examples/           # Example applications
-│   └── tests/              # Unit tests
-├── docker/                 # Docker configuration
-│   ├── Dockerfile          # Main Dockerfile
-│   └── nginx.conf          # Nginx configuration
-└── docs/                   # Documentation
-    ├── project.plan        # Project plan
-    ├── components.plan     # Component development plan
-    └── api.plan            # API documentation plan
+├── app/                    # Main application directory for PWA development
+│   ├── app.plan            # Application plan
+│   ├── index.html          # Main HTML entry point for PWA
+│   ├── index.ts            # Main TypeScript entry point for PWA
+│   ├── webcam.py           # Reference Python implementation
+│   ├── webcam.ts           # TypeScript implementation (to be translated)
+│   └── ts-pwalib/          # TypeScript PWA library
+│       ├── src/            # Source code
+│       ├── dist/           # Compiled output
+│       ├── examples/       # Example applications
+│       └── tests/          # Unit tests
+├── archive/                # Original files developed before reorganization (April 2023)
+├── build/                  # Results of current build used to serve the app
+├── dist/                   # Final product and build formula for others
+├── docs/                   # Documentation (all .md files except README.md)
+│   ├── project.plan        # Project plan
+│   ├── components.plan     # Component development plan
+│   └── api.plan            # API documentation plan
+└── docker/                 # Docker configuration
+    ├── Dockerfile          # Main Dockerfile
+    ├── docker-compose.yml  # Docker Compose configuration
+    └── nginx.conf          # Nginx configuration
 ```
 
 ## Project Goals
@@ -42,19 +48,23 @@ PF-Compression/
 
 ## Development Phases
 
-### Phase 1: Foundation (Current)
+### Phase 1: Foundation (Completed)
 
-- [x] Create abstract library interfaces in /lib
-- [x] Implement concrete effects in /research-effects-library
-- [x] Create example scripts in /examples
-- [ ] Set up TypeScript PWA library structure in /ts-pwalib
-- [ ] Create Docker configuration for development and deployment
+- [x] Create abstract library interfaces in /lib (archived)
+- [x] Implement concrete effects in /research-effects-library (archived)
+- [x] Create example scripts in /examples (archived)
+- [x] Set up TypeScript PWA library structure in /app/ts-pwalib
+- [x] Create Docker configuration for development and deployment
+- [x] Reorganize project structure for better maintainability
 
-### Phase 2: TypeScript Conversion
+### Phase 2: TypeScript Conversion (Current)
 
-- [ ] Convert core functionality to TypeScript
-- [ ] Implement WebGL-based video processing
-- [ ] Port existing effects to TypeScript
+- [x] Implement basic Effect class structure in TypeScript
+- [x] Create initial WebGL renderer for GPU-accelerated processing
+- [x] Port several basic effects to TypeScript
+- [ ] Translate webcam.py/webcam.ts to TypeScript
+- [ ] Create TypeScript replacements for Python libraries
+- [ ] Implement PWA entry point (index.html/index.ts)
 - [ ] Create PWA manifest and service worker
 - [ ] Implement offline functionality
 
@@ -77,9 +87,19 @@ PF-Compression/
 ## Technology Stack
 
 - **Frontend**: TypeScript, HTML5, CSS3, WebGL
-- **Build Tools**: Bun, npm
+- **Build Tools**: Bun
 - **Deployment**: Docker, Nginx
 - **Testing**: Jest
+
+## Build and Deployment Process
+
+1. **Development**: Code is developed in the `/app` directory
+2. **Building**: `docker-compose up -d` builds the application and places the output in `/build`
+3. **Testing**: Automated tests are run as part of the build process
+4. **Serving**: The built application is served from the `/build` directory
+5. **Distribution**: Successful builds are moved to `/dist` with a "formula" for others to build their own
+
+The entire process is self-contained and requires only Docker and a web browser with PWA capabilities to run. All dependencies and build steps are handled within Docker containers.
 
 ## Contribution Guidelines
 
