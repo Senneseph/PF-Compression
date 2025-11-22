@@ -228,7 +228,7 @@ export class VideoApp {
 
   /**
    * Get the current effect
-   * 
+   *
    * @returns Current effect, or null if no effect is applied
    */
   getEffect(): Effect | null {
@@ -236,8 +236,17 @@ export class VideoApp {
   }
 
   /**
+   * Get the current FPS
+   *
+   * @returns Current frames per second
+   */
+  getFPS(): number {
+    return this.fps;
+  }
+
+  /**
    * Get the canvas element
-   * 
+   *
    * @returns Canvas element
    */
   getCanvas(): HTMLCanvasElement {
