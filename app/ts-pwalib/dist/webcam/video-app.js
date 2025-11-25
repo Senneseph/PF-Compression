@@ -21,6 +21,8 @@ export class VideoApp {
         this.frameCount = 0;
         this.fps = 0;
         this.stream = null;
+        this.lastOriginalFrame = null;
+        this.lastProcessedFrame = null;
         // Set default options
         this.options = {
             width: options.width || 640,
@@ -40,8 +42,8 @@ export class VideoApp {
         this.video.autoplay = true;
         this.video.muted = true;
         this.video.playsInline = true;
-        // Create WebGL renderer
-        this.renderer = new WebGLRenderer(this.canvas);
+        // Create WebGL renderer with a separate canvas for processing
+        this.renderer = new WebGLRenderer();
         this.renderer.setSize(this.options.width, this.options.height);
         // Set initial effect
         this.currentEffect = this.options.initialEffect;
@@ -125,16 +127,18 @@ export class VideoApp {
         }
         // Process frame
         try {
-            // Render the frame with WebGL
-            const processedFrame = this.renderer.render(this.video);
-            // Apply effect if one is set
-            if (this.currentEffect) {
-                const effectResult = this.currentEffect.transform(processedFrame);
-                // Draw the effect result to the canvas
-                const ctx = this.canvas.getContext('2d');
-                if (ctx) {
-                    ctx.putImageData(effectResult, 0, 0);
-                }
+            // Render the frame with WebGL (this is the original frame)
+            const originalFrame = this.renderer.render(this.video);
+            this.lastOriginalFrame = originalFrame;
+            // Apply effect if one is set, otherwise use the original frame
+            const processedFrame = this.currentEffect
+                ? this.currentEffect.transform(originalFrame)
+                : originalFrame;
+            this.lastProcessedFrame = processedFrame;
+            // Draw the processed frame to the canvas
+            const ctx = this.canvas.getContext('2d');
+            if (ctx) {
+                ctx.putImageData(processedFrame, 0, 0);
             }
             // Draw FPS counter
             this.drawFPS();
@@ -231,6 +235,60 @@ export class VideoApp {
      */
     takeSnapshot() {
         return this.canvas.toDataURL('image/png');
+    }
+    /**
+     * Get the last original frame
+     *
+     * @returns Last original frame ImageData, or null if no frame has been captured
+     */
+    getOriginalFrame() {
+        return this.lastOriginalFrame;
+    }
+    /**
+     * Get the last processed frame
+     *
+     * @returns Last processed frame ImageData, or null if no frame has been processed
+     */
+    getProcessedFrame() {
+        return this.lastProcessedFrame;
+    }
+    /**
+     * Get statistics about the current frames
+     *
+     * @returns Object containing frame statistics
+     */
+    getStatistics() {
+        const width = this.options.width;
+        const height = this.options.height;
+        const originalSize = width * height * 4; // RGBA, 4 bytes per pixel
+        // Estimate processed size based on effect
+        let processedSize = originalSize;
+        let compressionRatio = 1.0;
+        if (this.currentEffect && this.lastProcessedFrame) {
+            // Calculate actual data size (simplified estimation)
+            // In a real scenario, you'd compress and measure the actual size
+            const data = this.lastProcessedFrame.data;
+            // Count unique colors to estimate compression
+            const uniquePixels = new Set();
+            for (let i = 0; i < data.length; i += 4) {
+                const pixel = (data[i] << 24) | (data[i + 1] << 16) | (data[i + 2] << 8) | data[i + 3];
+                uniquePixels.add(pixel);
+            }
+            // Estimate compression based on color reduction
+            const colorReduction = uniquePixels.size / (width * height);
+            processedSize = Math.floor(originalSize * colorReduction);
+            compressionRatio = originalSize / processedSize;
+        }
+        return {
+            fps: this.fps,
+            width,
+            height,
+            originalSize,
+            processedSize,
+            compressionRatio,
+            colorChannels: 4, // RGBA
+            bitDepth: 8 // 8 bits per channel
+        };
     }
     /**
      * Clean up resources

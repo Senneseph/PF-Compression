@@ -37,6 +37,8 @@ export declare class VideoApp {
     private frameCount;
     private fps;
     private stream;
+    private lastOriginalFrame;
+    private lastProcessedFrame;
     /**
      * Create a new VideoApp
      *
@@ -104,6 +106,33 @@ export declare class VideoApp {
      * @returns Data URL of the snapshot
      */
     takeSnapshot(): string;
+    /**
+     * Get the last original frame
+     *
+     * @returns Last original frame ImageData, or null if no frame has been captured
+     */
+    getOriginalFrame(): ImageData | null;
+    /**
+     * Get the last processed frame
+     *
+     * @returns Last processed frame ImageData, or null if no frame has been processed
+     */
+    getProcessedFrame(): ImageData | null;
+    /**
+     * Get statistics about the current frames
+     *
+     * @returns Object containing frame statistics
+     */
+    getStatistics(): {
+        fps: number;
+        width: number;
+        height: number;
+        originalSize: number;
+        processedSize: number;
+        compressionRatio: number;
+        colorChannels: number;
+        bitDepth: number;
+    };
     /**
      * Clean up resources
      */
