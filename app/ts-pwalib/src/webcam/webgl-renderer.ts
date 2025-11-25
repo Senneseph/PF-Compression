@@ -239,12 +239,15 @@ export class WebGLRenderer {
 
     // Upload texture
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
-    
+
     if (frame instanceof ImageData) {
       this.gl.texImage2D(
         this.gl.TEXTURE_2D,
         0,
         this.gl.RGBA,
+        width,
+        height,
+        0,
         this.gl.RGBA,
         this.gl.UNSIGNED_BYTE,
         new Uint8Array(frame.data.buffer)

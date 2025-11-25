@@ -69,15 +69,15 @@ export class RGBStrobeDecoder extends Decoder {
    */
   decode(encodedData: EncodedData): ImageData {
     const { outputFrame, channelIndex } = encodedData;
-    
+
     // Extract the channel data from the encoded frame
-    const { width, height, data: encodedData } = outputFrame;
+    const { width, height, data: frameData } = outputFrame;
     
     // Update the persistent frame
     const persistentData = this.persistentFrame.data;
-    
+
     for (let i = 0; i < width * height; i++) {
-      persistentData[i * 4 + channelIndex] = encodedData[i * 4 + channelIndex];
+      persistentData[i * 4 + channelIndex] = frameData[i * 4 + channelIndex];
     }
     
     return this.persistentFrame;
@@ -133,16 +133,16 @@ export class RGBEvenOddStrobeDecoder extends Decoder {
    */
   decode(encodedData: EncodedData): ImageData {
     const { outputFrame, updateMask, channelIndex } = encodedData;
-    
+
     // Extract the channel data from the encoded frame
-    const { width, height, data: encodedData } = outputFrame;
-    
+    const { width, height, data: frameData } = outputFrame;
+
     // Update the persistent frame
     const persistentData = this.persistentFrame.data;
-    
+
     for (let i = 0; i < width * height; i++) {
       if (updateMask[i]) {
-        persistentData[i * 4 + channelIndex] = encodedData[i * 4 + channelIndex];
+        persistentData[i * 4 + channelIndex] = frameData[i * 4 + channelIndex];
       }
     }
     
@@ -199,9 +199,9 @@ export class RGBMatrixStrobeDecoder extends Decoder {
    */
   decode(encodedData: EncodedData): ImageData {
     const { outputFrame, channelIndex, isOdd } = encodedData;
-    
+
     // Extract the channel data from the encoded frame
-    const { width, height, data: encodedData } = outputFrame;
+    const { width, height, data: frameData } = outputFrame;
     
     // Create checkerboard pattern
     const pattern = checkerboard(height, width);
@@ -214,10 +214,10 @@ export class RGBMatrixStrobeDecoder extends Decoder {
     
     // Update the persistent frame
     const persistentData = this.persistentFrame.data;
-    
+
     for (let i = 0; i < width * height; i++) {
       if (updateMask[i]) {
-        persistentData[i * 4 + channelIndex] = encodedData[i * 4 + channelIndex];
+        persistentData[i * 4 + channelIndex] = frameData[i * 4 + channelIndex];
       }
     }
     

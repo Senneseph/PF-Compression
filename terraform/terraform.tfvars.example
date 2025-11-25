@@ -1,0 +1,23 @@
+# DigitalOcean API token
+# Get this from: https://cloud.digitalocean.com/account/api/tokens
+do_token = "your-digitalocean-api-token-here"
+
+# SSH public key path
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# DigitalOcean region
+# Available regions: nyc1, nyc3, sfo3, ams3, sgp1, lon1, fra1, tor1, blr1
+region = "nyc3"
+
+# Droplet size
+# s-1vcpu-1gb    - $6/month  - 1 vCPU, 1GB RAM, 25GB SSD
+# s-1vcpu-2gb    - $12/month - 1 vCPU, 2GB RAM, 50GB SSD
+# s-2vcpu-2gb    - $18/month - 2 vCPU, 2GB RAM, 60GB SSD
+# s-2vcpu-4gb    - $24/month - 2 vCPU, 4GB RAM, 80GB SSD
+droplet_size = "s-1vcpu-1gb"
+
+# Domain configuration
+base_domain = "iffuso.com"
+subdomain   = "video-compression"
+domain      = "video-compression.iffuso.com"
+
