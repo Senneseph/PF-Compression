@@ -14,3 +14,7 @@ export * from './effects';
 // Export utilities
 export * from './utils/media';
 export * from './utils/canvas';
+
+// Export webcam functionality
+export { VideoApp } from './webcam/video-app';
+export { WebGLRenderer } from './webcam/webgl-renderer';

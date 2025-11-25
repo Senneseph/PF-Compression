@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
-  import { VideoApp } from 'pf-compression-pwa/src/webcam/video-app';
-  import { 
+  import {
+    VideoApp,
     ColorNegativeEffect,
     PrimeRGBEffect,
     FibonacciRGBEffect,
     MiddleFourBitsEffect
-  } from 'pf-compression-pwa/src/effects';
+  } from 'pf-compression-pwa';
   
   const dispatch = createEventDispatcher();
   
@@ -78,14 +78,23 @@
   
   export async function setCamera(deviceId: string) {
     const wasRunning = isRunning;
-    
+
     if (wasRunning) {
       await stop();
     }
-    
-    if (wasRunning) {
+
+    if (wasRunning && videoApp) {
       // Restart with new camera
-      await start();
+      await videoApp.start(deviceId);
+      isRunning = true;
+      dispatch('playing', true);
+
+      // Start FPS monitoring
+      fpsInterval = window.setInterval(() => {
+        if (videoApp) {
+          dispatch('stats', { fps: videoApp.getFPS() });
+        }
+      }, 1000);
     }
   }
   
