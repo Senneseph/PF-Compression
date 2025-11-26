@@ -1,8 +1,14 @@
 # Simple deployment script for PF-Compression
 param(
-    [string]$ServerIP = "167.71.191.234",
+    [string]$ServerIP = $env:DEPLOY_SERVER_IP,
     [string]$ServerUser = "root"
 )
+
+if ([string]::IsNullOrEmpty($ServerIP)) {
+    Write-Host "ERROR: DEPLOY_SERVER_IP environment variable not set!" -ForegroundColor Red
+    Write-Host "Please set it in your .env file or environment, or pass -ServerIP parameter" -ForegroundColor Yellow
+    exit 1
+}
 
 $ErrorActionPreference = "Stop"
 $SSHKey = "$env:USERPROFILE\.ssh\a-icon-deploy"

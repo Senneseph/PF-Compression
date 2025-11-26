@@ -6,7 +6,7 @@ Your PF-Compression application has been successfully deployed to DigitalOcean!
 
 ### Server Details
 - **Droplet**: a-icon-app
-- **IP Address**: 167.71.191.234
+- **IP Address**: Set via `DEPLOY_SERVER_IP` environment variable
 - **Region**: NYC3
 - **OS**: Ubuntu 24.04 x64
 - **Container Port**: 8080
@@ -14,7 +14,7 @@ Your PF-Compression application has been successfully deployed to DigitalOcean!
 ### Access URLs
 
 #### Direct Access (Available Now)
-- **Direct IP**: http://167.71.191.234:8080
+- **Direct IP**: http://$DEPLOY_SERVER_IP:8080
 - **Test it now**: The application is live and accessible!
 
 #### Domain Access (Requires DNS Configuration)
@@ -33,7 +33,7 @@ To access the application via `video-compression.iffuso.com`, you need to add a 
 Type: A
 Host: video-compression
 Domain: iffuso.com
-Value: 167.71.191.234
+Value: $DEPLOY_SERVER_IP
 TTL: 3600 (or Auto)
 ```
 
@@ -50,7 +50,7 @@ TTL: 3600 (or Auto)
 ```
 Internet
     ↓
-video-compression.iffuso.com (DNS A record → 167.71.191.234)
+video-compression.iffuso.com (DNS A record → $DEPLOY_SERVER_IP)
     ↓
 Nginx Reverse Proxy (Port 80)
     ↓
@@ -88,22 +88,22 @@ Svelte PWA Application
 
 ### View Container Status
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker ps"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$env:DEPLOY_SERVER_IP "docker ps"
 ```
 
 ### View Container Logs
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker logs -f pf-compression-web"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$env:DEPLOY_SERVER_IP "docker logs -f pf-compression-web"
 ```
 
 ### Restart Container
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker restart pf-compression-web"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$env:DEPLOY_SERVER_IP "docker restart pf-compression-web"
 ```
 
 ### Stop Container
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker stop pf-compression-web"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$env:DEPLOY_SERVER_IP "docker stop pf-compression-web"
 ```
 
 ---
@@ -113,7 +113,7 @@ ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker stop pf
 Once DNS is configured, you can enable HTTPS with Let's Encrypt:
 
 ```bash
-ssh -i ~/.ssh/a-icon-deploy root@167.71.191.234
+ssh -i ~/.ssh/a-icon-deploy root@$DEPLOY_SERVER_IP
 certbot --nginx -d video-compression.iffuso.com
 ```
 
@@ -142,7 +142,7 @@ Your deployed application includes:
 ### Application not loading?
 1. Check container is running: `docker ps | grep pf-compression`
 2. Check container logs: `docker logs pf-compression-web`
-3. Test direct access: http://167.71.191.234:8080
+3. Test direct access: http://$DEPLOY_SERVER_IP:8080
 
 ### Domain not working?
 1. Verify DNS propagation: `nslookup video-compression.iffuso.com`
@@ -157,7 +157,7 @@ Just run `.\deploy\deploy-fast.ps1` again!
 ## Next Steps
 
 1. **Configure DNS** - Add the A record for video-compression.iffuso.com
-2. **Test the application** - Visit http://167.71.191.234:8080 now!
+2. **Test the application** - Visit http://$DEPLOY_SERVER_IP:8080 now!
 3. **Enable HTTPS** - Run certbot after DNS is configured
 4. **Monitor** - Check logs and container status regularly
 

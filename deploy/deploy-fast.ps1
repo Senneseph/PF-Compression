@@ -3,7 +3,13 @@
 
 $ErrorActionPreference = "Stop"
 
-$ServerIP = "167.71.191.234"
+$ServerIP = $env:DEPLOY_SERVER_IP
+if ([string]::IsNullOrEmpty($ServerIP)) {
+    Write-Host "ERROR: DEPLOY_SERVER_IP environment variable not set!" -ForegroundColor Red
+    Write-Host "Please set it in your .env file or environment" -ForegroundColor Yellow
+    exit 1
+}
+
 $ServerUser = "root"
 $SSHKey = "$env:USERPROFILE\.ssh\a-icon-deploy"
 $ImageName = "pf-compression-web"

@@ -2,7 +2,7 @@
 
 ## Current Status
 - ✅ Droplet found: `a-icon-app` (ID: 530300735)
-- ✅ IP Address: `167.71.191.234`
+- ✅ IP Address: `$DEPLOY_SERVER_IP`
 - ✅ Deployment files created
 - ⏳ SSH access needed
 - ⏳ DNS configuration needed
@@ -52,7 +52,7 @@ Back in PowerShell on your local machine:
 
 ```powershell
 # Test SSH connection
-ssh root@167.71.191.234 "echo 'SSH works!'"
+ssh root@$DEPLOY_SERVER_IP "echo 'SSH works!'"
 ```
 
 If you see "SSH works!", you're ready to deploy!
@@ -79,7 +79,7 @@ Add an **A record** for your domain:
 
 - **Host**: `video-compression` (or `@` if using subdomain)
 - **Type**: `A`
-- **Value**: `167.71.191.234`
+- **Value**: `$DEPLOY_SERVER_IP`
 - **TTL**: `3600` (or automatic)
 
 Where to configure:
@@ -91,7 +91,7 @@ Where to configure:
 After DNS propagates (can take 5-60 minutes):
 
 1. **Visit**: http://video-compression.iffuso.com
-2. **Or visit directly**: http://167.71.191.234
+2. **Or visit directly**: http://$DEPLOY_SERVER_IP
 
 You should see the PF-Compression application!
 
@@ -100,7 +100,7 @@ You should see the PF-Compression application!
 Once DNS is working, enable HTTPS:
 
 ```bash
-ssh root@167.71.191.234
+ssh root@$DEPLOY_SERVER_IP
 
 # Install Certbot
 apt-get update
@@ -120,13 +120,13 @@ Then update the nginx configuration to use SSL.
 Get-Content "$env:USERPROFILE\.ssh\id_rsa.pub"
 
 # Try with verbose output
-ssh -v root@167.71.191.234
+ssh -v root@$DEPLOY_SERVER_IP
 ```
 
 ### Deployment Fails
 ```powershell
 # View logs
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs'
 
 # Restart deployment
 .\deploy\quick-deploy.ps1 -DeployOnly
@@ -138,23 +138,23 @@ ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.pr
 nslookup video-compression.iffuso.com
 
 # Use IP address directly
-Start-Process "http://167.71.191.234"
+Start-Process "http://$DEPLOY_SERVER_IP"
 ```
 
 ## Quick Commands
 
 ```powershell
 # View application logs
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs -f'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs -f'
 
 # Restart application
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml restart'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml restart'
 
 # Redeploy application
 .\deploy\quick-deploy.ps1 -DeployOnly
 
 # SSH into server
-ssh root@167.71.191.234
+ssh root@$DEPLOY_SERVER_IP
 ```
 
 ## Summary

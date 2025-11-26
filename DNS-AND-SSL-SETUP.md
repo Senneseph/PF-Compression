@@ -7,7 +7,7 @@ The domain `video-compression.iffuso.com` is currently pointing to the **wrong I
 ### Current DNS Configuration
 - **Domain**: video-compression.iffuso.com
 - **Current IP**: 134.209.39.114 ❌ (Wrong)
-- **Correct IP**: 167.71.191.234 ✅ (Our droplet: a-icon-app)
+- **Correct IP**: $DEPLOY_SERVER_IP ✅ (Our droplet: a-icon-app)
 
 This is why you're getting a 404 error when accessing https://video-compression.iffuso.com/
 
@@ -23,7 +23,7 @@ You need to update the DNS A record to point to the correct IP address.
 Type: A
 Host: video-compression
 Domain: iffuso.com
-Value: 167.71.191.234
+Value: $DEPLOY_SERVER_IP
 TTL: 3600 (or Auto)
 ```
 
@@ -40,7 +40,7 @@ TTL: 3600 (or Auto)
    - Current value: `134.209.39.114`
 
 4. **Update the A record**
-   - Change the IP address to: `167.71.191.234`
+   - Change the IP address to: `$DEPLOY_SERVER_IP`
    - Save the changes
 
 5. **Wait for DNS propagation**
@@ -57,7 +57,7 @@ nslookup video-compression.iffuso.com
 
 You should see:
 ```
-Address: 167.71.191.234
+Address: $DEPLOY_SERVER_IP
 ```
 
 ---
@@ -99,7 +99,7 @@ This will:
 If you prefer to set up SSL manually:
 
 ```bash
-ssh -i ~/.ssh/a-icon-deploy root@167.71.191.234
+ssh -i ~/.ssh/a-icon-deploy root@$DEPLOY_SERVER_IP
 
 # Install certbot
 apt-get update
@@ -114,12 +114,12 @@ certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --
 ## Current Status
 
 ### ✅ Working Now
-- **Direct IP Access**: http://167.71.191.234:8080
+- **Direct IP Access**: http://$DEPLOY_SERVER_IP:8080
 - **Container**: Running on port 8080
 - **Nginx Proxy**: Configured and ready
 
 ### ⏳ Pending
-- **DNS Update**: Change IP from 134.209.39.114 to 167.71.191.234
+- **DNS Update**: Change IP from 134.209.39.114 to $DEPLOY_SERVER_IP
 - **Domain Access**: http://video-compression.iffuso.com (after DNS update)
 - **SSL/HTTPS**: https://video-compression.iffuso.com (after DNS update)
 
@@ -141,7 +141,7 @@ certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --
 3. **Check DNS propagation**
    - Use online tools: https://dnschecker.org/
    - Enter: `video-compression.iffuso.com`
-   - Should show: `167.71.191.234`
+   - Should show: `$DEPLOY_SERVER_IP`
 
 ### Still Getting 404?
 
@@ -149,17 +149,17 @@ certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --
    ```powershell
    nslookup video-compression.iffuso.com
    ```
-   Should return: `167.71.191.234`
+   Should return: `$DEPLOY_SERVER_IP`
 
 2. **Test direct IP access**
    ```powershell
-   start http://167.71.191.234:8080
+   start http://$DEPLOY_SERVER_IP:8080
    ```
    This should work immediately
 
 3. **Check nginx configuration**
    ```bash
-   ssh -i ~/.ssh/a-icon-deploy root@167.71.191.234 "nginx -t"
+   ssh -i ~/.ssh/a-icon-deploy root@$DEPLOY_SERVER_IP "nginx -t"
    ```
 
 ### SSL Certificate Fails?
@@ -191,12 +191,12 @@ Invoke-WebRequest -Uri "http://video-compression.iffuso.com" -UseBasicParsing
 
 ### Check Container
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker ps | grep pf-compression"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$DEPLOY_SERVER_IP "docker ps | grep pf-compression"
 ```
 
 ### View Logs
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker logs -f pf-compression-web"
+ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$DEPLOY_SERVER_IP "docker logs -f pf-compression-web"
 ```
 
 ---
@@ -205,7 +205,7 @@ ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@167.71.191.234 "docker logs -f
 
 1. ✅ **Application deployed** - Running on port 8080
 2. ✅ **Nginx configured** - Ready for domain traffic
-3. ⏳ **Update DNS** - Change IP to 167.71.191.234
+3. ⏳ **Update DNS** - Change IP to $DEPLOY_SERVER_IP
 4. ⏳ **Wait for propagation** - 5-30 minutes
 5. ⏳ **Enable SSL** - Run `.\deploy\setup-ssl.ps1`
 

@@ -4,7 +4,7 @@
 
 1. **SSH Access**: You need SSH access to the DigitalOcean droplet
 2. **Docker**: Will be installed automatically on the server
-3. **DNS Configuration**: Point `video-compression.iffuso.com` to `167.71.191.234`
+3. **DNS Configuration**: Point `video-compression.iffuso.com` to `$DEPLOY_SERVER_IP`
 
 ## Quick Deployment
 
@@ -60,7 +60,7 @@ This script will:
 
 ### Step 3: Configure DNS
 
-Add an A record for `video-compression.iffuso.com` pointing to `167.71.191.234`
+Add an A record for `video-compression.iffuso.com` pointing to `$DEPLOY_SERVER_IP`
 
 ## Manual Deployment Steps
 
@@ -69,7 +69,7 @@ If you prefer to deploy manually:
 ### 1. Setup Server
 
 ```bash
-ssh root@167.71.191.234
+ssh root@$DEPLOY_SERVER_IP
 
 # Install Docker
 curl -fsSL https://get.docker.com -o get-docker.sh
@@ -95,10 +95,10 @@ From your local machine:
 
 ```powershell
 # Copy files to server
-scp -r app Dockerfile docker-compose.prod.yml deploy root@167.71.191.234:/opt/pf-compression/
+scp -r app Dockerfile docker-compose.prod.yml deploy root@$DEPLOY_SERVER_IP:/opt/pf-compression/
 
 # SSH into server
-ssh root@167.71.191.234
+ssh root@$DEPLOY_SERVER_IP
 
 # Build and start
 cd /opt/pf-compression
@@ -110,17 +110,17 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### View Logs
 ```bash
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs -f'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml logs -f'
 ```
 
 ### Restart Application
 ```bash
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml restart'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml restart'
 ```
 
 ### Stop Application
 ```bash
-ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml down'
+ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose.prod.yml down'
 ```
 
 ### Update Application
@@ -133,7 +133,7 @@ ssh root@167.71.191.234 'docker-compose -f /opt/pf-compression/docker-compose.pr
 To enable HTTPS with Let's Encrypt:
 
 ```bash
-ssh root@167.71.191.234
+ssh root@$DEPLOY_SERVER_IP
 
 # Install Certbot
 apt-get update
@@ -155,7 +155,7 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ### Cannot connect via SSH
 - Check that your SSH key is added to the droplet
-- Verify the droplet IP: `167.71.191.234`
+- Verify the droplet IP: `$DEPLOY_SERVER_IP`
 - Try using DigitalOcean console access
 
 ### Application not starting

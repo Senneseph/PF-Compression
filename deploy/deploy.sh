@@ -6,7 +6,13 @@
 set -e
 
 # Configuration
-SERVER_IP="167.71.191.234"
+SERVER_IP="${DEPLOY_SERVER_IP}"
+if [ -z "$SERVER_IP" ]; then
+    echo "ERROR: DEPLOY_SERVER_IP environment variable not set!"
+    echo "Please set it in your .env file or environment"
+    exit 1
+fi
+
 SERVER_USER="root"
 APP_DIR="/opt/pf-compression"
 REPO_URL="https://github.com/Senneseph/PF-Compression.git"
