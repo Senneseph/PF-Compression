@@ -7,25 +7,59 @@
   let videoPlayerRef: VideoPlayer;
   let currentEffect: string = 'None';
   let fps: number = 0;
+  let inputFps: number = 0;
+  let outputFps: number = 0;
   let isPlaying: boolean = false;
-  
+  let width: number = 640;
+  let height: number = 480;
+  let originalSize: number = 0;
+  let processedSize: number = 0;
+  let compressionRatio: number = 1.0;
+  let colorChannels: number = 4;
+  let bitDepth: number = 8;
+
   function handleEffectChange(event: CustomEvent<string>) {
     currentEffect = event.detail;
     if (videoPlayerRef) {
       videoPlayerRef.setEffect(currentEffect);
     }
   }
-  
+
   function handleCameraChange(event: CustomEvent<string>) {
     if (videoPlayerRef) {
       videoPlayerRef.setCamera(event.detail);
     }
   }
-  
+
   function handleStatsUpdate(event: CustomEvent<{ fps: number }>) {
     fps = event.detail.fps;
   }
-  
+
+  function handleDetailedStatsUpdate(event: CustomEvent<{
+    fps: number;
+    inputFps: number;
+    outputFps: number;
+    width: number;
+    height: number;
+    originalSize: number;
+    processedSize: number;
+    compressionRatio: number;
+    colorChannels: number;
+    bitDepth: number;
+  }>) {
+    const stats = event.detail;
+    fps = stats.fps;
+    inputFps = stats.inputFps;
+    outputFps = stats.outputFps;
+    width = stats.width;
+    height = stats.height;
+    originalSize = stats.originalSize;
+    processedSize = stats.processedSize;
+    compressionRatio = stats.compressionRatio;
+    colorChannels = stats.colorChannels;
+    bitDepth = stats.bitDepth;
+  }
+
   function handlePlayingChange(event: CustomEvent<boolean>) {
     isPlaying = event.detail;
   }
@@ -39,27 +73,40 @@
   
   <div class="container">
     <div class="video-section">
-      <VideoPlayer 
+      <VideoPlayer
         bind:this={videoPlayerRef}
         on:stats={handleStatsUpdate}
+        on:detailedStats={handleDetailedStatsUpdate}
         on:playing={handlePlayingChange}
       />
     </div>
-    
+
     <div class="controls-section">
       <div class="control-group">
         <h3>Camera</h3>
         <CameraSelector on:change={handleCameraChange} disabled={isPlaying} />
       </div>
-      
+
       <div class="control-group">
         <h3>Effect</h3>
         <EffectSelector on:change={handleEffectChange} currentEffect={currentEffect} />
       </div>
-      
+
       <div class="control-group">
         <h3>Stats</h3>
-        <Stats {fps} effect={currentEffect} />
+        <Stats
+          {fps}
+          {inputFps}
+          {outputFps}
+          effect={currentEffect}
+          {width}
+          {height}
+          {originalSize}
+          {processedSize}
+          {compressionRatio}
+          {colorChannels}
+          {bitDepth}
+        />
       </div>
     </div>
   </div>

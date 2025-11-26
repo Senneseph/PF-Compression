@@ -39,7 +39,10 @@ export class VideoApp {
   private animationFrameId: number = 0;
   private lastFrameTime: number = 0;
   private frameCount: number = 0;
-  private fps: number = 0;
+  private outputFps: number = 0;
+  private inputLastFrameTime: number = 0;
+  private inputFrameCount: number = 0;
+  private inputFps: number = 0;
   private stream: MediaStream | null = null;
   private lastOriginalFrame: ImageData | null = null;
   private lastProcessedFrame: ImageData | null = null;
@@ -157,15 +160,28 @@ export class VideoApp {
       return;
     }
 
-    // Calculate FPS
+    // Calculate output FPS (processing rate)
     const now = performance.now();
     const elapsed = now - this.lastFrameTime;
     this.frameCount++;
 
     if (elapsed >= 1000) {
-      this.fps = (this.frameCount * 1000) / elapsed;
+      this.outputFps = (this.frameCount * 1000) / elapsed;
       this.lastFrameTime = now;
       this.frameCount = 0;
+    }
+
+    // Calculate input FPS (camera frame rate)
+    // Check if video has new frame data
+    if (this.video.readyState >= this.video.HAVE_CURRENT_DATA) {
+      const inputElapsed = now - this.inputLastFrameTime;
+      this.inputFrameCount++;
+
+      if (inputElapsed >= 1000) {
+        this.inputFps = (this.inputFrameCount * 1000) / inputElapsed;
+        this.inputLastFrameTime = now;
+        this.inputFrameCount = 0;
+      }
     }
 
     // Process frame
@@ -186,9 +202,6 @@ export class VideoApp {
       if (ctx) {
         ctx.putImageData(processedFrame, 0, 0);
       }
-
-      // Draw FPS counter
-      this.drawFPS();
     } catch (error) {
       console.error('Error rendering frame:', error);
     }
@@ -198,28 +211,8 @@ export class VideoApp {
   }
 
   /**
-   * Draw FPS counter on the canvas
-   */
-  private drawFPS(): void {
-    const ctx = this.canvas.getContext('2d');
-    if (!ctx) {
-      return;
-    }
-
-    ctx.font = '16px Arial';
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = 2;
-    
-    const text = `FPS: ${this.fps.toFixed(1)}`;
-    
-    ctx.strokeText(text, 10, 20);
-    ctx.fillText(text, 10, 20);
-  }
-
-  /**
    * Set the current effect
-   * 
+   *
    * @param effect - Effect to apply, or null for no effect
    */
   setEffect(effect: Effect | null): void {
@@ -241,12 +234,30 @@ export class VideoApp {
   }
 
   /**
-   * Get the current FPS
+   * Get the current output FPS (processing rate)
+   *
+   * @returns Current output frames per second
+   */
+  getOutputFPS(): number {
+    return this.outputFps;
+  }
+
+  /**
+   * Get the current input FPS (camera frame rate)
+   *
+   * @returns Current input frames per second
+   */
+  getInputFPS(): number {
+    return this.inputFps;
+  }
+
+  /**
+   * Get the current FPS (output FPS for backward compatibility)
    *
    * @returns Current frames per second
    */
   getFPS(): number {
-    return this.fps;
+    return this.outputFps;
   }
 
   /**
@@ -322,6 +333,8 @@ export class VideoApp {
    */
   getStatistics(): {
     fps: number;
+    inputFps: number;
+    outputFps: number;
     width: number;
     height: number;
     originalSize: number;
@@ -357,7 +370,9 @@ export class VideoApp {
     }
 
     return {
-      fps: this.fps,
+      fps: this.outputFps, // For backward compatibility
+      inputFps: this.inputFps,
+      outputFps: this.outputFps,
       width,
       height,
       originalSize,

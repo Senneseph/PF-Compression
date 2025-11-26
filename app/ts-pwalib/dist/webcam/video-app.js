@@ -19,7 +19,10 @@ export class VideoApp {
         this.animationFrameId = 0;
         this.lastFrameTime = 0;
         this.frameCount = 0;
-        this.fps = 0;
+        this.outputFps = 0;
+        this.inputLastFrameTime = 0;
+        this.inputFrameCount = 0;
+        this.inputFps = 0;
         this.stream = null;
         this.lastOriginalFrame = null;
         this.lastProcessedFrame = null;
@@ -116,14 +119,25 @@ export class VideoApp {
         if (!this.isRunning) {
             return;
         }
-        // Calculate FPS
+        // Calculate output FPS (processing rate)
         const now = performance.now();
         const elapsed = now - this.lastFrameTime;
         this.frameCount++;
         if (elapsed >= 1000) {
-            this.fps = (this.frameCount * 1000) / elapsed;
+            this.outputFps = (this.frameCount * 1000) / elapsed;
             this.lastFrameTime = now;
             this.frameCount = 0;
+        }
+        // Calculate input FPS (camera frame rate)
+        // Check if video has new frame data
+        if (this.video.readyState >= this.video.HAVE_CURRENT_DATA) {
+            const inputElapsed = now - this.inputLastFrameTime;
+            this.inputFrameCount++;
+            if (inputElapsed >= 1000) {
+                this.inputFps = (this.inputFrameCount * 1000) / inputElapsed;
+                this.inputLastFrameTime = now;
+                this.inputFrameCount = 0;
+            }
         }
         // Process frame
         try {
@@ -140,30 +154,12 @@ export class VideoApp {
             if (ctx) {
                 ctx.putImageData(processedFrame, 0, 0);
             }
-            // Draw FPS counter
-            this.drawFPS();
         }
         catch (error) {
             console.error('Error rendering frame:', error);
         }
         // Request next frame
         this.animationFrameId = requestAnimationFrame(() => this.renderFrame());
-    }
-    /**
-     * Draw FPS counter on the canvas
-     */
-    drawFPS() {
-        const ctx = this.canvas.getContext('2d');
-        if (!ctx) {
-            return;
-        }
-        ctx.font = '16px Arial';
-        ctx.fillStyle = 'white';
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 2;
-        const text = `FPS: ${this.fps.toFixed(1)}`;
-        ctx.strokeText(text, 10, 20);
-        ctx.fillText(text, 10, 20);
     }
     /**
      * Set the current effect
@@ -186,12 +182,28 @@ export class VideoApp {
         return this.currentEffect;
     }
     /**
-     * Get the current FPS
+     * Get the current output FPS (processing rate)
+     *
+     * @returns Current output frames per second
+     */
+    getOutputFPS() {
+        return this.outputFps;
+    }
+    /**
+     * Get the current input FPS (camera frame rate)
+     *
+     * @returns Current input frames per second
+     */
+    getInputFPS() {
+        return this.inputFps;
+    }
+    /**
+     * Get the current FPS (output FPS for backward compatibility)
      *
      * @returns Current frames per second
      */
     getFPS() {
-        return this.fps;
+        return this.outputFps;
     }
     /**
      * Get the canvas element
@@ -280,7 +292,9 @@ export class VideoApp {
             compressionRatio = originalSize / processedSize;
         }
         return {
-            fps: this.fps,
+            fps: this.outputFps, // For backward compatibility
+            inputFps: this.inputFps,
+            outputFps: this.outputFps,
             width,
             height,
             originalSize,

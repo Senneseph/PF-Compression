@@ -1,29 +1,99 @@
 <script lang="ts">
   export let fps: number = 0;
+  export let inputFps: number = 0;
+  export let outputFps: number = 0;
   export let effect: string = 'None';
-  
-  $: fpsColor = fps >= 25 ? '#4ade80' : fps >= 15 ? '#fbbf24' : '#ef4444';
+  export let width: number = 640;
+  export let height: number = 480;
+  export let originalSize: number = 0;
+  export let processedSize: number = 0;
+  export let compressionRatio: number = 1.0;
+  export let colorChannels: number = 4;
+  export let bitDepth: number = 8;
+
+  $: inputFpsColor = inputFps >= 25 ? '#4ade80' : inputFps >= 15 ? '#fbbf24' : '#ef4444';
+  $: outputFpsColor = outputFps >= 25 ? '#4ade80' : outputFps >= 15 ? '#fbbf24' : '#ef4444';
+  $: compressionColor = compressionRatio > 2 ? '#4ade80' : compressionRatio > 1.5 ? '#fbbf24' : '#ef4444';
+  $: fpsAcceleration = inputFps > 0 ? (outputFps / inputFps) : 1.0;
+  $: accelerationColor = fpsAcceleration >= 1.0 ? '#4ade80' : '#fbbf24';
+
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
 </script>
 
 <div class="stats">
   <div class="stat-item">
-    <div class="stat-label">FPS</div>
-    <div class="stat-value" style="color: {fpsColor}">
-      {fps.toFixed(1)}
+    <div class="stat-label">Input FPS (Camera)</div>
+    <div class="stat-value" style="color: {inputFpsColor}">
+      {inputFps.toFixed(1)}
     </div>
   </div>
-  
+
+  <div class="stat-item">
+    <div class="stat-label">Output FPS (Processed)</div>
+    <div class="stat-value" style="color: {outputFpsColor}">
+      {outputFps.toFixed(1)}
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">FPS Acceleration</div>
+    <div class="stat-value" style="color: {accelerationColor}">
+      {fpsAcceleration.toFixed(2)}x
+    </div>
+  </div>
+
   <div class="stat-item">
     <div class="stat-label">Current Effect</div>
     <div class="stat-value effect-name">
       {effect}
     </div>
   </div>
-  
+
   <div class="stat-item">
     <div class="stat-label">Resolution</div>
     <div class="stat-value">
-      640 × 480
+      {width} × {height}
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">Color Depth</div>
+    <div class="stat-value">
+      {colorChannels} channels × {bitDepth}-bit
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">Original Frame Size</div>
+    <div class="stat-value">
+      {formatBytes(originalSize)}
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">Processed Frame Size</div>
+    <div class="stat-value">
+      {formatBytes(processedSize)}
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">Compression Ratio</div>
+    <div class="stat-value" style="color: {compressionColor}">
+      {compressionRatio.toFixed(2)}x
+    </div>
+  </div>
+
+  <div class="stat-item">
+    <div class="stat-label">Size Reduction</div>
+    <div class="stat-value" style="color: {compressionColor}">
+      {((1 - processedSize / originalSize) * 100).toFixed(1)}%
     </div>
   </div>
 </div>

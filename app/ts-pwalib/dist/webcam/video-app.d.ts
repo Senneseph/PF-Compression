@@ -35,7 +35,10 @@ export declare class VideoApp {
     private animationFrameId;
     private lastFrameTime;
     private frameCount;
-    private fps;
+    private outputFps;
+    private inputLastFrameTime;
+    private inputFrameCount;
+    private inputFps;
     private stream;
     private lastOriginalFrame;
     private lastProcessedFrame;
@@ -61,10 +64,6 @@ export declare class VideoApp {
      */
     private renderFrame;
     /**
-     * Draw FPS counter on the canvas
-     */
-    private drawFPS;
-    /**
      * Set the current effect
      *
      * @param effect - Effect to apply, or null for no effect
@@ -77,7 +76,19 @@ export declare class VideoApp {
      */
     getEffect(): Effect | null;
     /**
-     * Get the current FPS
+     * Get the current output FPS (processing rate)
+     *
+     * @returns Current output frames per second
+     */
+    getOutputFPS(): number;
+    /**
+     * Get the current input FPS (camera frame rate)
+     *
+     * @returns Current input frames per second
+     */
+    getInputFPS(): number;
+    /**
+     * Get the current FPS (output FPS for backward compatibility)
      *
      * @returns Current frames per second
      */
@@ -125,6 +136,8 @@ export declare class VideoApp {
      */
     getStatistics(): {
         fps: number;
+        inputFps: number;
+        outputFps: number;
         width: number;
         height: number;
         originalSize: number;

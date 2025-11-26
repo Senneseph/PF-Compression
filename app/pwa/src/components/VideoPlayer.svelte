@@ -9,13 +9,17 @@
   } from 'pf-compression-pwa';
   
   const dispatch = createEventDispatcher();
-  
+
   let canvas: HTMLCanvasElement;
+  let originalCanvas: HTMLCanvasElement;
   let video: HTMLVideoElement;
   let videoApp: VideoApp | null = null;
   let isRunning = false;
   let error: string | null = null;
   let fpsInterval: number;
+  let statsInterval: number;
+  let inputFps: number = 0;
+  let outputFps: number = 0;
   
   const effects = {
     'None': null,
@@ -41,13 +45,34 @@
       await videoApp.start();
       isRunning = true;
       dispatch('playing', true);
-      
-      // Start FPS monitoring
+
+      // Start FPS and statistics monitoring
       fpsInterval = window.setInterval(() => {
         if (videoApp) {
           dispatch('stats', { fps: videoApp.getFPS() });
         }
       }, 1000);
+
+      // Update original canvas with original frames and FPS
+      statsInterval = window.setInterval(() => {
+        if (videoApp && originalCanvas) {
+          const originalFrame = videoApp.getOriginalFrame();
+          if (originalFrame) {
+            const ctx = originalCanvas.getContext('2d');
+            if (ctx) {
+              ctx.putImageData(originalFrame, 0, 0);
+            }
+          }
+
+          // Update FPS values
+          inputFps = videoApp.getInputFPS();
+          outputFps = videoApp.getOutputFPS();
+
+          // Dispatch detailed statistics
+          const stats = videoApp.getStatistics();
+          dispatch('detailedStats', stats);
+        }
+      }, 100); // Update at 10 FPS for smoother display
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to start camera';
       console.error('Error starting video:', err);
@@ -56,17 +81,21 @@
   
   export async function stop() {
     if (!isRunning) return;
-    
+
     if (videoApp) {
       videoApp.stop();
       videoApp = null;
     }
-    
+
     isRunning = false;
     dispatch('playing', false);
-    
+
     if (fpsInterval) {
       clearInterval(fpsInterval);
+    }
+
+    if (statsInterval) {
+      clearInterval(statsInterval);
     }
   }
   
@@ -109,17 +138,40 @@
 </script>
 
 <div class="video-player">
-  <div class="video-container">
-    <canvas bind:this={canvas} width="640" height="480"></canvas>
+  <div class="video-grid">
+    <div class="video-wrapper">
+      <div class="video-header">
+        <span class="video-title">Original</span>
+        <span class="fps-badge" class:active={isRunning}>
+          {inputFps.toFixed(1)} FPS
+        </span>
+      </div>
+      <div class="video-container">
+        <canvas bind:this={originalCanvas} width="640" height="480"></canvas>
+      </div>
+    </div>
+
+    <div class="video-wrapper">
+      <div class="video-header">
+        <span class="video-title">Processed</span>
+        <span class="fps-badge" class:active={isRunning}>
+          {outputFps.toFixed(1)} FPS
+        </span>
+      </div>
+      <div class="video-container">
+        <canvas bind:this={canvas} width="640" height="480"></canvas>
+      </div>
+    </div>
+
     <video bind:this={video} style="display: none;"></video>
-    
+
     {#if error}
       <div class="error-overlay">
         <p>⚠️ {error}</p>
         <button on:click={start}>Retry</button>
       </div>
     {/if}
-    
+
     {#if !isRunning && !error}
       <div class="start-overlay">
         <button class="start-button" on:click={start}>
@@ -129,7 +181,7 @@
       </div>
     {/if}
   </div>
-  
+
   <div class="controls">
     <button on:click={isRunning ? stop : start} class="control-btn">
       {isRunning ? '⏸ Pause' : '▶ Play'}
@@ -141,7 +193,52 @@
   .video-player {
     width: 100%;
   }
-  
+
+  .video-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    position: relative;
+  }
+
+  .video-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .video-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .video-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #aaa;
+  }
+
+  .fps-badge {
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.25rem 0.75rem;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: #666;
+    transition: all 0.3s ease;
+  }
+
+  .fps-badge.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  }
+
   .video-container {
     position: relative;
     width: 100%;
@@ -150,8 +247,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    border: 2px solid #333;
+    border-radius: 8px;
+    overflow: hidden;
   }
-  
+
   canvas {
     width: 100%;
     height: 100%;
@@ -171,6 +271,8 @@
     justify-content: center;
     background: rgba(0, 0, 0, 0.8);
     backdrop-filter: blur(10px);
+    grid-column: 1 / -1;
+    z-index: 20;
   }
 
   .error-overlay p {
