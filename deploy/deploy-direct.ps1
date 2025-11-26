@@ -64,7 +64,9 @@ if ($status -match "Up") {
     Write-Host "✅ Deployment successful!" -ForegroundColor Green
     Write-Host ""
     Write-Host "🌐 Application is now running at:" -ForegroundColor Cyan
-    Write-Host "   http://video-compression.iffuso.com" -ForegroundColor White
+    if ($env:TARGET_DOMAIN) {
+        Write-Host "   http://$env:TARGET_DOMAIN" -ForegroundColor White
+    }
     Write-Host "   http://${ServerIP}" -ForegroundColor White
 } else {
     Write-Host "❌ Deployment failed. Checking logs..." -ForegroundColor Red

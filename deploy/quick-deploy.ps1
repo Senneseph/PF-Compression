@@ -130,7 +130,9 @@ if (-not $SetupOnly) {
             Write-Host "✅ Deployment successful!" -ForegroundColor Green
             Write-Host ""
             Write-Host "🌐 Application URLs:" -ForegroundColor Cyan
-            Write-Host "   http://video-compression.iffuso.com (configure DNS A record to ${ServerIP})" -ForegroundColor White
+            if ($env:TARGET_DOMAIN) {
+                Write-Host "   http://$env:TARGET_DOMAIN (configure DNS A record to ${ServerIP})" -ForegroundColor White
+            }
             Write-Host "   http://${ServerIP}" -ForegroundColor White
             Write-Host ""
             Write-Host "📋 To view logs: ssh ${ServerUser}@${ServerIP} ""docker-compose -f ${AppDir}/docker-compose.prod.yml logs -f""" -ForegroundColor Yellow

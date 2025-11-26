@@ -151,7 +151,9 @@ show_menu() {
             deploy_app
             setup_ssl
             print_info "✅ Full deployment complete!"
-            print_info "Visit https://video-compression.iffuso.com"
+            if [ -n "$TARGET_DOMAIN" ]; then
+                print_info "Visit https://${TARGET_DOMAIN}"
+            fi
             ;;
         2)
             build_pwa

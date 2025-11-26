@@ -18,7 +18,7 @@ Your PF-Compression application has been successfully deployed to DigitalOcean!
 - **Test it now**: The application is live and accessible!
 
 #### Domain Access (Requires DNS Configuration)
-- **Domain**: http://video-compression.iffuso.com
+- **Domain**: http://$TARGET_DOMAIN
 - **Status**: Nginx reverse proxy configured and ready
 - **Action Required**: Configure DNS A record (see below)
 
@@ -26,7 +26,7 @@ Your PF-Compression application has been successfully deployed to DigitalOcean!
 
 ## DNS Configuration Required
 
-To access the application via `video-compression.iffuso.com`, you need to add a DNS A record:
+To access the application via `$TARGET_DOMAIN`, you need to add a DNS A record:
 
 ### DNS Settings
 ```
@@ -50,7 +50,7 @@ TTL: 3600 (or Auto)
 ```
 Internet
     ↓
-video-compression.iffuso.com (DNS A record → $DEPLOY_SERVER_IP)
+$TARGET_DOMAIN (DNS A record → $DEPLOY_SERVER_IP)
     ↓
 Nginx Reverse Proxy (Port 80)
     ↓
@@ -79,7 +79,7 @@ Svelte PWA Application
 .\deploy\setup-nginx-proxy.ps1
 ```
 - Configures nginx reverse proxy on host
-- Maps video-compression.iffuso.com to port 8080
+- Maps $TARGET_DOMAIN to port 8080
 - Already completed!
 
 ---
@@ -114,7 +114,7 @@ Once DNS is configured, you can enable HTTPS with Let's Encrypt:
 
 ```bash
 ssh -i ~/.ssh/a-icon-deploy root@$DEPLOY_SERVER_IP
-certbot --nginx -d video-compression.iffuso.com
+certbot --nginx -d $TARGET_DOMAIN
 ```
 
 This will:
@@ -145,7 +145,7 @@ Your deployed application includes:
 3. Test direct access: http://$DEPLOY_SERVER_IP:8080
 
 ### Domain not working?
-1. Verify DNS propagation: `nslookup video-compression.iffuso.com`
+1. Verify DNS propagation: `nslookup $TARGET_DOMAIN`
 2. Check nginx config: `nginx -t`
 3. Check nginx logs: `tail -f /var/log/nginx/error.log`
 
@@ -156,7 +156,7 @@ Just run `.\deploy\deploy-fast.ps1` again!
 
 ## Next Steps
 
-1. **Configure DNS** - Add the A record for video-compression.iffuso.com
+1. **Configure DNS** - Add the A record for $TARGET_DOMAIN
 2. **Test the application** - Visit http://$DEPLOY_SERVER_IP:8080 now!
 3. **Enable HTTPS** - Run certbot after DNS is configured
 4. **Monitor** - Check logs and container status regularly
@@ -168,7 +168,7 @@ Just run `.\deploy\deploy-fast.ps1` again!
 For issues or questions:
 - Check container logs: `docker logs pf-compression-web`
 - Check nginx logs: `tail -f /var/log/nginx/error.log`
-- Verify DNS: `nslookup video-compression.iffuso.com`
+- Verify DNS: `nslookup $TARGET_DOMAIN`
 
 ---
 

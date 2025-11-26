@@ -65,7 +65,9 @@ if remote_exec "docker-compose -f ${APP_DIR}/docker-compose.prod.yml ps | grep -
     echo "✅ Deployment successful!"
     echo ""
     echo "🌐 Application is now running at:"
-    echo "   http://video-compression.iffuso.com"
+    if [ -n "$TARGET_DOMAIN" ]; then
+        echo "   http://${TARGET_DOMAIN}"
+    fi
     echo "   http://${SERVER_IP}"
 else
     echo "❌ Deployment failed. Checking logs..."

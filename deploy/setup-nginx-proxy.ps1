@@ -1,9 +1,16 @@
-# Setup nginx reverse proxy for video-compression.iffuso.com
+# Setup nginx reverse proxy for the target domain
 $ErrorActionPreference = "Stop"
 
 $ServerIP = $env:DEPLOY_SERVER_IP
 if ([string]::IsNullOrEmpty($ServerIP)) {
     Write-Host "ERROR: DEPLOY_SERVER_IP environment variable not set!" -ForegroundColor Red
+    Write-Host "Please set it in your .env file or environment" -ForegroundColor Yellow
+    exit 1
+}
+
+$Domain = $env:TARGET_DOMAIN
+if ([string]::IsNullOrEmpty($Domain)) {
+    Write-Host "ERROR: TARGET_DOMAIN environment variable not set!" -ForegroundColor Red
     Write-Host "Please set it in your .env file or environment" -ForegroundColor Yellow
     exit 1
 }
@@ -14,20 +21,36 @@ $SSHKey = "$env:USERPROFILE\.ssh\a-icon-deploy"
 Write-Host "=== Setting up Nginx Reverse Proxy ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Step 1: Upload nginx configuration
-Write-Host "[1/3] Uploading nginx configuration..." -ForegroundColor Yellow
-scp -i $SSHKey -o StrictHostKeyChecking=no deploy/nginx-host.conf ${ServerUser}@${ServerIP}:/tmp/video-compression.conf
+# Step 1: Prepare and upload nginx configuration
+Write-Host "[1/3] Preparing nginx configuration..." -ForegroundColor Yellow
+
+# Read the template and replace the domain
+$nginxConfig = Get-Content deploy/nginx-host.conf -Raw
+$nginxConfig = $nginxConfig -replace 'video-compression\.iffuso\.com', $Domain
+
+# Save to temp file
+$tempLocalFile = "$env:TEMP\nginx-${Domain}.conf"
+$nginxConfig | Set-Content $tempLocalFile -NoNewline
+
+# Upload to server
+Write-Host "Uploading nginx configuration..." -ForegroundColor Yellow
+$TempConfName = $Domain -replace '\.', '-'
+scp -i $SSHKey -o StrictHostKeyChecking=no $tempLocalFile ${ServerUser}@${ServerIP}:/tmp/${TempConfName}.conf
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to upload nginx config!" -ForegroundColor Red
+    Remove-Item $tempLocalFile -Force -ErrorAction SilentlyContinue
     exit 1
 }
+
+# Clean up temp file
+Remove-Item $tempLocalFile -Force -ErrorAction SilentlyContinue
 Write-Host "Upload complete!" -ForegroundColor Green
 Write-Host ""
 
 # Step 2: Install and configure nginx on host
 Write-Host "[2/3] Installing and configuring nginx..." -ForegroundColor Yellow
 
-$RemoteCommands = @'
+$RemoteCommands = @"
 # Install nginx if not already installed
 if ! command -v nginx &> /dev/null; then
     apt-get update
@@ -35,10 +58,10 @@ if ! command -v nginx &> /dev/null; then
 fi
 
 # Copy configuration
-cp /tmp/video-compression.conf /etc/nginx/sites-available/video-compression.iffuso.com
+cp /tmp/${TempConfName}.conf /etc/nginx/sites-available/${Domain}
 
 # Enable site
-ln -sf /etc/nginx/sites-available/video-compression.iffuso.com /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/${Domain} /etc/nginx/sites-enabled/
 
 # Test nginx configuration
 nginx -t
@@ -52,7 +75,7 @@ systemctl start nginx
 
 # Show status
 systemctl status nginx --no-pager -l
-'@
+"@
 
 ssh -i $SSHKey ${ServerUser}@${ServerIP} $RemoteCommands
 if ($LASTEXITCODE -ne 0) {
@@ -71,12 +94,12 @@ Write-Host ""
 Write-Host "=== Setup Complete! ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Your application is now accessible at:" -ForegroundColor Cyan
-Write-Host "  http://video-compression.iffuso.com" -ForegroundColor White
+Write-Host "  http://$Domain" -ForegroundColor White
 Write-Host "  http://$ServerIP:8080 (direct access)" -ForegroundColor White
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. Configure DNS A record for video-compression.iffuso.com -> $ServerIP" -ForegroundColor White
+Write-Host "  1. Configure DNS A record for $Domain -> $ServerIP" -ForegroundColor White
 Write-Host "  2. (Optional) Set up SSL with Let's Encrypt:" -ForegroundColor White
-Write-Host "     certbot --nginx -d video-compression.iffuso.com" -ForegroundColor Gray
+Write-Host "     certbot --nginx -d $Domain" -ForegroundColor Gray
 Write-Host ""
 

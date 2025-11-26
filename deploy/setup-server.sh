@@ -68,7 +68,11 @@ fi
 echo "✅ Server setup complete!"
 echo ""
 echo "Next steps:"
-echo "1. Configure DNS to point video-compression.iffuso.com to this server"
+if [ -n "$TARGET_DOMAIN" ]; then
+    echo "1. Configure DNS to point ${TARGET_DOMAIN} to this server"
+else
+    echo "1. Configure DNS to point your domain to this server"
+fi
 echo "2. Run the deploy script to deploy the application"
 echo "3. (Optional) Set up SSL with Let's Encrypt"
 

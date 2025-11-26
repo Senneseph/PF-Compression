@@ -1,4 +1,4 @@
-# 🚀 Deployment Steps for video-compression.iffuso.com
+# 🚀 Deployment Steps for $TARGET_DOMAIN
 
 ## Current Status
 - ✅ Droplet found: `a-icon-app` (ID: 530300735)
@@ -90,7 +90,7 @@ Where to configure:
 
 After DNS propagates (can take 5-60 minutes):
 
-1. **Visit**: http://video-compression.iffuso.com
+1. **Visit**: http://$TARGET_DOMAIN
 2. **Or visit directly**: http://$DEPLOY_SERVER_IP
 
 You should see the PF-Compression application!
@@ -107,7 +107,7 @@ apt-get update
 apt-get install -y certbot python3-certbot-nginx
 
 # Get SSL certificate
-certbot certonly --standalone -d video-compression.iffuso.com --pre-hook "docker-compose -f /opt/pf-compression/docker-compose.prod.yml down" --post-hook "docker-compose -f /opt/pf-compression/docker-compose.prod.yml up -d"
+certbot certonly --standalone -d $TARGET_DOMAIN --pre-hook "docker-compose -f /opt/pf-compression/docker-compose.prod.yml down" --post-hook "docker-compose -f /opt/pf-compression/docker-compose.prod.yml up -d"
 ```
 
 Then update the nginx configuration to use SSL.
@@ -135,7 +135,7 @@ ssh root@$DEPLOY_SERVER_IP 'docker-compose -f /opt/pf-compression/docker-compose
 ### DNS Not Working
 ```powershell
 # Check DNS propagation
-nslookup video-compression.iffuso.com
+nslookup $TARGET_DOMAIN
 
 # Use IP address directly
 Start-Process "http://$DEPLOY_SERVER_IP"
@@ -164,7 +164,7 @@ ssh root@$DEPLOY_SERVER_IP
 3. ✅ Test SSH connection
 4. ✅ Run `.\deploy\quick-deploy.ps1`
 5. ✅ Configure DNS A record
-6. ✅ Visit http://video-compression.iffuso.com
+6. ✅ Visit http://$TARGET_DOMAIN
 
 That's it! 🎉
 

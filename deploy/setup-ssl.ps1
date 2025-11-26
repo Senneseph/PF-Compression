@@ -1,4 +1,4 @@
-# Setup SSL certificate for video-compression.iffuso.com
+# Setup SSL certificate for the target domain
 $ErrorActionPreference = "Stop"
 
 $ServerIP = $env:DEPLOY_SERVER_IP
@@ -8,9 +8,15 @@ if ([string]::IsNullOrEmpty($ServerIP)) {
     exit 1
 }
 
+$Domain = $env:TARGET_DOMAIN
+if ([string]::IsNullOrEmpty($Domain)) {
+    Write-Host "ERROR: TARGET_DOMAIN environment variable not set!" -ForegroundColor Red
+    Write-Host "Please set it in your .env file or environment" -ForegroundColor Yellow
+    exit 1
+}
+
 $ServerUser = "root"
 $SSHKey = "$env:USERPROFILE\.ssh\a-icon-deploy"
-$Domain = "video-compression.iffuso.com"
 
 Write-Host "=== SSL Certificate Setup for $Domain ===" -ForegroundColor Cyan
 Write-Host ""
@@ -29,7 +35,7 @@ if ($DNSResult -notmatch $ServerIP) {
     Write-Host ""
     Write-Host "Please update your DNS A record:" -ForegroundColor Cyan
     Write-Host "  Type: A" -ForegroundColor White
-    Write-Host "  Host: video-compression" -ForegroundColor White
+    Write-Host "  Host: $($Domain -replace '\..*$', '')" -ForegroundColor White
     Write-Host "  Value: $ServerIP" -ForegroundColor White
     Write-Host ""
     $continue = Read-Host "Continue anyway? (y/N)"

@@ -4,7 +4,7 @@
 
 1. **SSH Access**: You need SSH access to the DigitalOcean droplet
 2. **Docker**: Will be installed automatically on the server
-3. **DNS Configuration**: Point `video-compression.iffuso.com` to `$DEPLOY_SERVER_IP`
+3. **DNS Configuration**: Point `$TARGET_DOMAIN` to `$DEPLOY_SERVER_IP`
 
 ## Quick Deployment
 
@@ -60,7 +60,7 @@ This script will:
 
 ### Step 3: Configure DNS
 
-Add an A record for `video-compression.iffuso.com` pointing to `$DEPLOY_SERVER_IP`
+Add an A record for `$TARGET_DOMAIN` pointing to `$DEPLOY_SERVER_IP`
 
 ## Manual Deployment Steps
 
@@ -144,7 +144,7 @@ cd /opt/pf-compression
 docker-compose -f docker-compose.prod.yml down
 
 # Get SSL certificate
-certbot certonly --standalone -d video-compression.iffuso.com
+certbot certonly --standalone -d $TARGET_DOMAIN
 
 # Update nginx.conf to use SSL
 # Then restart the application

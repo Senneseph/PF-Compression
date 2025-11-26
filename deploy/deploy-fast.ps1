@@ -88,8 +88,10 @@ Write-Host ""
 Write-Host "=== Deployment Complete! ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Application is now running at:" -ForegroundColor Cyan
-Write-Host "  http://$ServerIP" -ForegroundColor White
-Write-Host "  http://video-compression.iffuso.com (once DNS is configured)" -ForegroundColor White
+Write-Host "  http://$ServerIP:8080 (direct access)" -ForegroundColor White
+if ($env:TARGET_DOMAIN) {
+    Write-Host "  http://$env:TARGET_DOMAIN (once DNS is configured)" -ForegroundColor White
+}
 Write-Host ""
 Write-Host "To view logs:" -ForegroundColor Cyan
 Write-Host "  ssh -i $SSHKey ${ServerUser}@${ServerIP} 'docker logs -f pf-compression-web'" -ForegroundColor White

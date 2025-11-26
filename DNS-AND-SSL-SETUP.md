@@ -2,14 +2,14 @@
 
 ## Current Issue
 
-The domain `video-compression.iffuso.com` is currently pointing to the **wrong IP address**.
+The domain `$TARGET_DOMAIN` is currently pointing to the **wrong IP address**.
 
 ### Current DNS Configuration
-- **Domain**: video-compression.iffuso.com
+- **Domain**: $TARGET_DOMAIN
 - **Current IP**: 134.209.39.114 ❌ (Wrong)
 - **Correct IP**: $DEPLOY_SERVER_IP ✅ (Our droplet: a-icon-app)
 
-This is why you're getting a 404 error when accessing https://video-compression.iffuso.com/
+This is why you're getting a 404 error when accessing https://$TARGET_DOMAIN/
 
 ---
 
@@ -36,7 +36,7 @@ TTL: 3600 (or Auto)
    - Look for "DNS", "DNS Records", or "Manage DNS"
 
 3. **Find the existing A record**
-   - Look for: `video-compression.iffuso.com` or `video-compression`
+   - Look for: `$TARGET_DOMAIN` or `video-compression`
    - Current value: `134.209.39.114`
 
 4. **Update the A record**
@@ -52,7 +52,7 @@ TTL: 3600 (or Auto)
 Run this command to check if DNS has updated:
 
 ```powershell
-nslookup video-compression.iffuso.com
+nslookup $TARGET_DOMAIN
 ```
 
 You should see:
@@ -68,10 +68,10 @@ Once DNS is updated, test HTTP access:
 
 ```powershell
 # Test from command line
-Invoke-WebRequest -Uri "http://video-compression.iffuso.com" -UseBasicParsing
+Invoke-WebRequest -Uri "http://$TARGET_DOMAIN" -UseBasicParsing
 
 # Or open in browser
-start http://video-compression.iffuso.com
+start http://$TARGET_DOMAIN
 ```
 
 You should see the PF-Compression application!
@@ -106,7 +106,7 @@ apt-get update
 apt-get install -y certbot python3-certbot-nginx
 
 # Obtain certificate
-certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --email your-email@example.com --redirect
+certbot --nginx -d $TARGET_DOMAIN --non-interactive --agree-tos --email your-email@example.com --redirect
 ```
 
 ---
@@ -120,8 +120,8 @@ certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --
 
 ### ⏳ Pending
 - **DNS Update**: Change IP from 134.209.39.114 to $DEPLOY_SERVER_IP
-- **Domain Access**: http://video-compression.iffuso.com (after DNS update)
-- **SSL/HTTPS**: https://video-compression.iffuso.com (after DNS update)
+- **Domain Access**: http://$TARGET_DOMAIN (after DNS update)
+- **SSL/HTTPS**: https://$TARGET_DOMAIN (after DNS update)
 
 ---
 
@@ -140,14 +140,14 @@ certbot --nginx -d video-compression.iffuso.com --non-interactive --agree-tos --
 
 3. **Check DNS propagation**
    - Use online tools: https://dnschecker.org/
-   - Enter: `video-compression.iffuso.com`
+   - Enter: `$TARGET_DOMAIN`
    - Should show: `$DEPLOY_SERVER_IP`
 
 ### Still Getting 404?
 
 1. **Verify the correct IP**
    ```powershell
-   nslookup video-compression.iffuso.com
+   nslookup $TARGET_DOMAIN
    ```
    Should return: `$DEPLOY_SERVER_IP`
 
@@ -176,12 +176,12 @@ Common reasons:
 
 ### Check DNS
 ```powershell
-nslookup video-compression.iffuso.com
+nslookup $TARGET_DOMAIN
 ```
 
 ### Test HTTP
 ```powershell
-Invoke-WebRequest -Uri "http://video-compression.iffuso.com" -UseBasicParsing
+Invoke-WebRequest -Uri "http://$TARGET_DOMAIN" -UseBasicParsing
 ```
 
 ### Setup SSL
@@ -210,6 +210,6 @@ ssh -i "$env:USERPROFILE\.ssh\a-icon-deploy" root@$DEPLOY_SERVER_IP "docker logs
 5. ⏳ **Enable SSL** - Run `.\deploy\setup-ssl.ps1`
 
 Once DNS is updated, your application will be accessible at:
-- http://video-compression.iffuso.com
-- https://video-compression.iffuso.com (after SSL setup)
+- http://$TARGET_DOMAIN
+- https://$TARGET_DOMAIN (after SSL setup)
 
