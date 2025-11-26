@@ -15,6 +15,8 @@ export class VideoApp {
      * @param options - Options for the VideoApp
      */
     constructor(options = {}) {
+        this.effectChain = null;
+        this.useEffectChain = false;
         this.isRunning = false;
         this.animationFrameId = 0;
         this.lastFrameTime = 0;
@@ -26,6 +28,7 @@ export class VideoApp {
         this.stream = null;
         this.lastOriginalFrame = null;
         this.lastProcessedFrame = null;
+        this.lastChainResult = null;
         // Set default options
         this.options = {
             width: options.width || 640,
@@ -144,10 +147,19 @@ export class VideoApp {
             // Render the frame with WebGL (this is the original frame)
             const originalFrame = this.renderer.render(this.video);
             this.lastOriginalFrame = originalFrame;
-            // Apply effect if one is set, otherwise use the original frame
-            const processedFrame = this.currentEffect
-                ? this.currentEffect.transform(originalFrame)
-                : originalFrame;
+            let processedFrame;
+            // Use effect chain if enabled, otherwise use single effect
+            if (this.useEffectChain && this.effectChain) {
+                const chainResult = this.effectChain.process(originalFrame);
+                this.lastChainResult = chainResult;
+                processedFrame = chainResult.finalFrame;
+            }
+            else {
+                // Apply effect if one is set, otherwise use the original frame
+                processedFrame = this.currentEffect
+                    ? this.currentEffect.transform(originalFrame)
+                    : originalFrame;
+            }
             this.lastProcessedFrame = processedFrame;
             // Draw the processed frame to the canvas
             const ctx = this.canvas.getContext('2d');
@@ -303,6 +315,47 @@ export class VideoApp {
             colorChannels: 4, // RGBA
             bitDepth: 8 // 8 bits per channel
         };
+    }
+    /**
+     * Set the effect chain
+     *
+     * @param chain - Effect chain to use
+     */
+    setEffectChain(chain) {
+        this.effectChain = chain;
+        this.useEffectChain = chain !== null;
+    }
+    /**
+     * Get the effect chain
+     *
+     * @returns Current effect chain, or null if not using a chain
+     */
+    getEffectChain() {
+        return this.effectChain;
+    }
+    /**
+     * Get the last chain processing result
+     *
+     * @returns Last chain processing result, or null if not using a chain
+     */
+    getLastChainResult() {
+        return this.lastChainResult;
+    }
+    /**
+     * Get chain statistics
+     *
+     * @returns Array of stage statistics from the last chain processing
+     */
+    getChainStatistics() {
+        return this.lastChainResult?.stageStatistics || [];
+    }
+    /**
+     * Get intermediate frames from the last chain processing
+     *
+     * @returns Array of intermediate frames
+     */
+    getIntermediateFrames() {
+        return this.lastChainResult?.intermediateFrames || [];
     }
     /**
      * Clean up resources

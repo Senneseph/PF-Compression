@@ -3,7 +3,10 @@
   import EffectSelector from './components/EffectSelector.svelte';
   import CameraSelector from './components/CameraSelector.svelte';
   import Stats from './components/Stats.svelte';
-  
+  import EffectChainBuilder from './components/EffectChainBuilder.svelte';
+  import ChainVisualization from './components/ChainVisualization.svelte';
+  import type { EffectChainStage, StageStatistics } from 'pf-compression-pwa';
+
   let videoPlayerRef: VideoPlayer;
   let currentEffect: string = 'None';
   let fps: number = 0;
@@ -17,6 +20,13 @@
   let compressionRatio: number = 1.0;
   let colorChannels: number = 4;
   let bitDepth: number = 8;
+
+  // Effect chain state
+  let useEffectChain: boolean = false;
+  let chainStages: EffectChainStage[] = [];
+  let intermediateFrames: ImageData[] = [];
+  let stageStatistics: StageStatistics[] = [];
+  let stageNames: string[] = [];
 
   function handleEffectChange(event: CustomEvent<string>) {
     currentEffect = event.detail;
@@ -63,6 +73,68 @@
   function handlePlayingChange(event: CustomEvent<boolean>) {
     isPlaying = event.detail;
   }
+
+  // Effect chain handlers
+  function handleAddStage(event: CustomEvent<{ type: string; name: string }>) {
+    const { type, name } = event.detail;
+    if (videoPlayerRef) {
+      videoPlayerRef.addChainStage(type as any, name);
+      updateChainState();
+    }
+  }
+
+  function handleRemoveStage(event: CustomEvent<number>) {
+    if (videoPlayerRef) {
+      videoPlayerRef.removeChainStage(event.detail);
+      updateChainState();
+    }
+  }
+
+  function handleToggleStage(event: CustomEvent<number>) {
+    if (videoPlayerRef) {
+      videoPlayerRef.toggleChainStage(event.detail);
+      updateChainState();
+    }
+  }
+
+  function handleMoveStage(event: CustomEvent<{ from: number; to: number }>) {
+    if (videoPlayerRef) {
+      videoPlayerRef.moveChainStage(event.detail.from, event.detail.to);
+      updateChainState();
+    }
+  }
+
+  function toggleEffectChain() {
+    useEffectChain = !useEffectChain;
+    if (videoPlayerRef) {
+      videoPlayerRef.setUseEffectChain(useEffectChain);
+    }
+  }
+
+  function updateChainState() {
+    if (videoPlayerRef) {
+      chainStages = videoPlayerRef.getChainStages();
+      stageNames = chainStages.map(s => s.name);
+    }
+  }
+
+  // Update intermediate frames periodically
+  let chainUpdateInterval: number;
+  $: if (useEffectChain && isPlaying) {
+    chainUpdateInterval = window.setInterval(() => {
+      if (videoPlayerRef) {
+        const result = videoPlayerRef.getLastChainResult();
+        if (result) {
+          intermediateFrames = result.intermediateFrames;
+          stageStatistics = result.stageStatistics;
+        }
+      }
+    }, 100);
+  } else {
+    if (chainUpdateInterval) {
+      clearInterval(chainUpdateInterval);
+    }
+  }
 </script>
 
 <main>
@@ -70,6 +142,13 @@
     <h1>🎥 PF-Compression Showcase</h1>
     <p>Real-time webcam effects using novel compression algorithms</p>
   </header>
+
+      <div class="controls-section">
+      <div class="control-group">
+        <h3>Camera</h3>
+        <CameraSelector on:change={handleCameraChange} disabled={isPlaying} />
+      </div>
+      </div>
   
   <div class="container">
     <div class="video-section">
@@ -82,15 +161,41 @@
     </div>
 
     <div class="controls-section">
-      <div class="control-group">
-        <h3>Camera</h3>
-        <CameraSelector on:change={handleCameraChange} disabled={isPlaying} />
-      </div>
 
       <div class="control-group">
-        <h3>Effect</h3>
-        <EffectSelector on:change={handleEffectChange} currentEffect={currentEffect} />
+        <h3>Mode</h3>
+        <div class="mode-toggle">
+          <button
+            class="mode-btn"
+            class:active={!useEffectChain}
+            on:click={() => { if (useEffectChain) toggleEffectChain(); }}>
+            Single Effect
+          </button>
+          <button
+            class="mode-btn"
+            class:active={useEffectChain}
+            on:click={() => { if (!useEffectChain) toggleEffectChain(); }}>
+            Effect Chain
+          </button>
+        </div>
       </div>
+
+      {#if !useEffectChain}
+        <div class="control-group">
+          <h3>Effect</h3>
+          <EffectSelector on:change={handleEffectChange} currentEffect={currentEffect} />
+        </div>
+      {:else}
+        <div class="control-group">
+          <EffectChainBuilder
+            stages={chainStages}
+            on:addStage={handleAddStage}
+            on:removeStage={handleRemoveStage}
+            on:toggleStage={handleToggleStage}
+            on:moveStage={handleMoveStage}
+          />
+        </div>
+      {/if}
 
       <div class="control-group">
         <h3>Stats</h3>
@@ -110,6 +215,16 @@
       </div>
     </div>
   </div>
+
+  {#if useEffectChain}
+    <div class="chain-section">
+      <ChainVisualization
+        {intermediateFrames}
+        {stageStatistics}
+        {stageNames}
+      />
+    </div>
+  {/if}
   
   <footer>
     <p>
@@ -210,6 +325,43 @@
   
   footer a:hover {
     text-decoration: underline;
+  }
+
+  .mode-toggle {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .mode-btn {
+    flex: 1;
+    padding: 0.75rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: #aaa;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+
+  .mode-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .mode-btn.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-color: #667eea;
+    color: white;
+  }
+
+  .chain-section {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 1.5rem;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 2rem;
   }
 </style>
 

@@ -5,6 +5,7 @@
  * It handles video capture, processing, and display.
  */
 import { Effect } from '../core/effect';
+import { EffectChain, ChainProcessingResult, StageStatistics } from '../core/effect-chain';
 /**
  * Options for the VideoApp
  */
@@ -31,6 +32,8 @@ export declare class VideoApp {
     private video;
     private renderer;
     private currentEffect;
+    private effectChain;
+    private useEffectChain;
     private isRunning;
     private animationFrameId;
     private lastFrameTime;
@@ -42,6 +45,7 @@ export declare class VideoApp {
     private stream;
     private lastOriginalFrame;
     private lastProcessedFrame;
+    private lastChainResult;
     /**
      * Create a new VideoApp
      *
@@ -146,6 +150,36 @@ export declare class VideoApp {
         colorChannels: number;
         bitDepth: number;
     };
+    /**
+     * Set the effect chain
+     *
+     * @param chain - Effect chain to use
+     */
+    setEffectChain(chain: EffectChain | null): void;
+    /**
+     * Get the effect chain
+     *
+     * @returns Current effect chain, or null if not using a chain
+     */
+    getEffectChain(): EffectChain | null;
+    /**
+     * Get the last chain processing result
+     *
+     * @returns Last chain processing result, or null if not using a chain
+     */
+    getLastChainResult(): ChainProcessingResult | null;
+    /**
+     * Get chain statistics
+     *
+     * @returns Array of stage statistics from the last chain processing
+     */
+    getChainStatistics(): StageStatistics[];
+    /**
+     * Get intermediate frames from the last chain processing
+     *
+     * @returns Array of intermediate frames
+     */
+    getIntermediateFrames(): ImageData[];
     /**
      * Clean up resources
      */

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  pf-compression-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pf-compression-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    networks:
+      - pf-compression-network
+    environment:
+      - NODE_ENV=production
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+networks:
+  pf-compression-network:
+    driver: bridge
+

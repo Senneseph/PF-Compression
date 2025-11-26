@@ -5,9 +5,26 @@
     ColorNegativeEffect,
     PrimeRGBEffect,
     FibonacciRGBEffect,
-    MiddleFourBitsEffect
+    MiddleFourBitsEffect,
+    EffectChain,
+    type EffectChainStage,
+    type ChainProcessingResult,
+    // Encoders
+    RGBStrobeEncoder,
+    RGBEvenOddStrobeEncoder,
+    RGBMatrixStrobeEncoder,
+    // Decoders
+    RGBStrobeDecoder,
+    RGBEvenOddStrobeDecoder,
+    RGBMatrixStrobeDecoder,
+    // Filters
+    ColorNegativeFilter,
+    MiddleFourBitsFilter,
+    GrayscaleFilter,
+    ThresholdFilter,
+    BrightnessFilter
   } from 'pf-compression-pwa';
-  
+
   const dispatch = createEventDispatcher();
 
   let canvas: HTMLCanvasElement;
@@ -126,7 +143,120 @@
       }, 1000);
     }
   }
-  
+
+  // Effect chain methods
+  let effectChain: EffectChain | null = null;
+
+  export function setUseEffectChain(use: boolean) {
+    if (use && !effectChain) {
+      effectChain = new EffectChain();
+    }
+    if (videoApp) {
+      videoApp.setEffectChain(use ? effectChain : null);
+    }
+  }
+
+  export function addChainStage(type: 'effect' | 'encoder' | 'decoder' | 'filter', name: string) {
+    if (!effectChain) {
+      effectChain = new EffectChain();
+    }
+
+    switch (type) {
+      case 'effect':
+        if (name === 'Prime RGB') effectChain.addEffect(name, new PrimeRGBEffect());
+        else if (name === 'Fibonacci RGB') effectChain.addEffect(name, new FibonacciRGBEffect());
+        else if (name === 'Color Negative') effectChain.addEffect(name, new ColorNegativeEffect());
+        else if (name === 'Middle 4-Bit') effectChain.addEffect(name, new MiddleFourBitsEffect());
+        break;
+      case 'encoder':
+        if (name === 'RGB Strobe') effectChain.addEncoder(name, new RGBStrobeEncoder());
+        else if (name === 'RGB Even-Odd Strobe') effectChain.addEncoder(name, new RGBEvenOddStrobeEncoder());
+        else if (name === 'RGB Matrix Strobe') effectChain.addEncoder(name, new RGBMatrixStrobeEncoder());
+        break;
+      case 'decoder':
+        if (name === 'RGB Strobe') effectChain.addDecoder(name, new RGBStrobeDecoder());
+        else if (name === 'RGB Even-Odd Strobe') effectChain.addDecoder(name, new RGBEvenOddStrobeDecoder());
+        else if (name === 'RGB Matrix Strobe') effectChain.addDecoder(name, new RGBMatrixStrobeDecoder());
+        break;
+      case 'filter':
+        if (name === 'Color Negative') effectChain.addFilter(name, new ColorNegativeFilter());
+        else if (name === 'Middle Four Bits') effectChain.addFilter(name, new MiddleFourBitsFilter());
+        else if (name === 'Grayscale') effectChain.addFilter(name, new GrayscaleFilter());
+        else if (name === 'Threshold') effectChain.addFilter(name, new ThresholdFilter(128));
+        else if (name === 'Brightness') effectChain.addFilter(name, new BrightnessFilter(1.2));
+        break;
+    }
+
+    if (videoApp) {
+      videoApp.setEffectChain(effectChain);
+    }
+  }
+
+  export function removeChainStage(index: number) {
+    if (effectChain) {
+      effectChain.removeStage(index);
+      if (videoApp) {
+        videoApp.setEffectChain(effectChain);
+      }
+    }
+  }
+
+  export function toggleChainStage(index: number) {
+    if (effectChain) {
+      const stages = effectChain.getStages();
+      if (stages[index]) {
+        effectChain.setStageEnabled(index, !stages[index].enabled);
+        if (videoApp) {
+          videoApp.setEffectChain(effectChain);
+        }
+      }
+    }
+  }
+
+  export function moveChainStage(from: number, to: number) {
+    if (effectChain) {
+      const stages = effectChain.getStages();
+      if (from >= 0 && from < stages.length && to >= 0 && to < stages.length) {
+        const stage = stages[from];
+        stages.splice(from, 1);
+        stages.splice(to, 0, stage);
+        // Rebuild chain with new order
+        const newChain = new EffectChain();
+        stages.forEach(s => {
+          switch (s.type) {
+            case 'effect':
+              newChain.addEffect(s.name, s.processor as any);
+              break;
+            case 'encoder':
+              newChain.addEncoder(s.name, s.processor as any);
+              break;
+            case 'decoder':
+              newChain.addDecoder(s.name, s.processor as any);
+              break;
+            case 'filter':
+              newChain.addFilter(s.name, s.processor as any);
+              break;
+          }
+          if (!s.enabled) {
+            newChain.setStageEnabled(newChain.getStages().length - 1, false);
+          }
+        });
+        effectChain = newChain;
+        if (videoApp) {
+          videoApp.setEffectChain(effectChain);
+        }
+      }
+    }
+  }
+
+  export function getChainStages(): EffectChainStage[] {
+    return effectChain?.getStages() || [];
+  }
+
+  export function getLastChainResult(): ChainProcessingResult | null {
+    return videoApp?.getLastChainResult() || null;
+  }
+
   onMount(() => {
     // Auto-start on mount
     start();

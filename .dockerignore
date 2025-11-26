@@ -1,0 +1,43 @@
+# Node modules
+**/node_modules
+**/npm-debug.log
+
+# Build outputs
+**/dist
+**/build
+**/.vite
+
+# Development files
+**/.env
+**/.env.local
+**/.env.*.local
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs
+
+# Testing
+coverage
+.nyc_output
+
+# Deployment
+deploy/*.sh
+deploy/*.ps1
+README.md
+

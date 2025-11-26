@@ -6,8 +6,13 @@
  */
 // Export core functionality
 export * from './core/effect';
+export * from './core/effect-chain';
 // Export effects
 export * from './effects';
+// Export encoders, decoders, and filters
+export * from './webcam/encoders';
+export * from './webcam/decoders';
+export * from './webcam/filters';
 // Export utilities
 export * from './utils/media';
 export * from './utils/canvas';
