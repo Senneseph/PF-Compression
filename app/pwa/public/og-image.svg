@@ -42,18 +42,18 @@
   <!-- Right side - Text -->
   <g transform="translate(450, 200)">
     <!-- Title -->
-    <text x="0" y="60" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="700" fill="#ffffff">
+    <text x="0" y="60" font-family="DejaVu Sans, Arial, sans-serif" font-size="72" font-weight="700" fill="#ffffff">
       Video Compression
     </text>
     <!-- Subtitle -->
-    <text x="0" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="400" fill="#a0aec0">
+    <text x="0" y="130" font-family="DejaVu Sans, Arial, sans-serif" font-size="36" font-weight="400" fill="#a0aec0">
       Showcase
     </text>
     <!-- Description -->
-    <text x="0" y="200" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#718096">
+    <text x="0" y="200" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" fill="#718096">
       Real-time webcam effects using
     </text>
-    <text x="0" y="235" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#718096">
+    <text x="0" y="235" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" fill="#718096">
       novel compression algorithms
     </text>
   </g>
